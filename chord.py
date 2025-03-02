@@ -18,7 +18,6 @@ def send_request(ip, port, msg):
     response = s.recv(1024).decode()
     s.close()
     return response
-    s.close()
 
 class ChordNode:
     def __init__(self, ip, port, replication_factor=3, consistency_model='eventual', is_bootstrap=False):
