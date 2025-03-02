@@ -3,13 +3,37 @@ import threading
 import hashlib
 import sys
 
+# TODO list:
+# 1. Join/Depart -- WIP
+# 2. Find proper position to insert in ring
+# 3. Actually implement insert/query/delete
+# 4. Replication
+
+# Question: What happens if two nodes hash to the same value? (Exceedingly rare, but still)
+
+def send_request(ip, port, msg):
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.connect((ip, port))
+    s.sendall(msg.encode())
+    response = s.recv(1024).decode()
+    s.close()
+    return response
+    s.close()
+
 class ChordNode:
     def __init__(self, ip, port, replication_factor=3, consistency_model='eventual', is_bootstrap=False):
         self.ip = ip
         self.port = port
         self.node_id = self.hash_id(f"{ip}:{port}")
-        self.successor = self if is_bootstrap else None
-        self.predecessor = self if is_bootstrap else None
+
+        self.successor_ip = self.ip if is_bootstrap else None
+        self.successor_port = self.port if is_bootstrap else None
+        self.successor_id = self.node_id if is_bootstrap else None
+
+        self.predecessor_ip = self.ip if is_bootstrap else None
+        self.predecessor_port = self.port if is_bootstrap else None
+        self.predecessor_id = self.node_id if is_bootstrap else None
+
         self.data_store = {}
         self.replication_factor = replication_factor
         self.consistency_model = consistency_model
@@ -38,6 +62,7 @@ class ChordNode:
             client_thread.start()
 
     def handle_client(self, conn, addr):
+        print("Entered here")
         try:
             data = conn.recv(1024).decode().strip()
             if not data:
@@ -69,6 +94,10 @@ class ChordNode:
                     response = self.join_request(args[1])
             elif command == 'depart':
                 response = self.depart()
+            elif command == 'find_insert_position':
+                response = self.find_insert_position(args[1], args[2])
+            elif command == 'update_pred_info':
+                response = self.update_pred_info(args[1], args[2])
             else:
                 response = "Unknown command"
             conn.sendall(response.encode())
@@ -92,7 +121,7 @@ class ChordNode:
         key_hash = self.hash_id(key)
         if self.is_responsible(key_hash):
             if key in self.data_store:
-                self.data_store[key] += value
+                self.data_store[key] += value # TODO: Concat instead of +=
             else:
                 self.data_store[key] = value
             self.replicate('insert', key, value)
@@ -121,20 +150,32 @@ class ChordNode:
         else:
             return self.forward_request('delete', key)
 
-    def find_insert_position(self, new_node_id):
-        current = self
-        while True:
-            if current.successor == current:
-                break
-            if current.node_id < new_node_id <= current.successor.node_id:
-                break
-            if current.node_id > current.successor.node_id:
-                if new_node_id > current.node_id or new_node_id <= current.successor.node_id:
-                    break
-            current = current.successor
-            if current == self:
-                break
-        return current
+    def update_pred_info(self, new_node_ip, new_node_port):
+        print("Entered update_pred_info")
+        new_node_id = self.hash_id(f"{new_node_ip}:{new_node_port}")
+        self.predecessor_ip = new_node_ip
+        self.predecessor_port = int(new_node_port)
+        self.predecessor_id = new_node_id
+
+        return "Successfully updated pred info"
+
+    def find_insert_position(self, new_node_ip, new_node_port):
+        new_node_id = self.hash_id(f"{new_node_ip}:{new_node_port}")
+        print(f"Trying to insert {new_node_id}")
+        # In any of these cases, we are the predecessor of the new node
+        if (self.successor_id == self.node_id) or \
+            (self.node_id < new_node_id <= self.successor_id) or \
+                (self.node_id > self.successor_id and (new_node_id > self.node_id or new_node_id <= self.successor_id)):
+            response = f"{self.ip} {self.port} {self.successor_ip} {self.successor_port}"
+            self.successor_ip = new_node_ip
+            self.successor_port = new_node_port
+            self.successor_id = new_node_id
+
+            return response
+        
+        # Otherwise, we have to forward the request to our successor
+        cmd = f"find_insert_position {new_node_ip} {new_node_port}"
+        return send_request(self.successor_id, self.successor_port, cmd)
 
     def join_request(self, new_node_info):
         try:
@@ -145,32 +186,48 @@ class ChordNode:
         new_node_id = self.hash_id(new_node_info)
         print(f"Received join request from node {new_node_id} ({new_node_info})", flush=True)
 
-        if self.successor == self and self.predecessor == self:
-            response = f"JOIN_ACCEPTED {self.node_id} {self.node_id}"
+        if self.successor_id == self.node_id and self.predecessor_id == self.node_id:
+            response = f"JOIN_ACCEPTED {self.ip} {self.port} {self.ip} {self.port}"
+            self.predecessor_ip = self.successor_ip = new_ip
+            self.predecessor_port = self.successor_port = new_port
+            self.predecessor_id = self.successor_id = new_node_id
             print(response, flush=True)
             return response
         else:
-            insert_after = self.find_insert_position(new_node_id)
-            successor = insert_after.successor
-            response = f"JOIN_ACCEPTED {insert_after.node_id} {successor.node_id}"
+            insert_after_ip, insert_after_port, successor_ip, successor_port = self.find_insert_position(new_ip, new_port).split()
+            response = f"JOIN_ACCEPTED {insert_after_ip} {insert_after_port} {successor_ip} {successor_port}"
             print(response, flush=True)
+
+            # Also inform successor to update info
+            cmd = f"update_pred_info {new_ip} {new_port}"
+            print(f"Updating {successor_ip} {successor_port}")
+            resp = send_request(successor_ip, int(successor_port), cmd)
+            print(resp)
+
             return response
 
     def join_existing(self, bootstrap_ip, bootstrap_port):
         try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.connect((bootstrap_ip, bootstrap_port))
-            join_info = f"{self.ip}:{self.port}"
-            s.sendall(f"join {join_info}".encode())
-            response = s.recv(1024).decode()
+            join_cmd = f"join {self.ip}:{self.port}"
+            response = send_request(bootstrap_ip, bootstrap_port, join_cmd)
             print("Join response:", response, flush=True)
-            s.close()
+
             parts = response.split()
-            if parts[0] == "JOIN_ACCEPTED" and len(parts) >= 3:
-                pred_id = parts[1]
-                succ_id = parts[2]
-                self.predecessor = pred_id
-                self.successor = succ_id
+            if parts[0] == "JOIN_ACCEPTED" and len(parts) >= 5:
+                pred_ip = parts[1]
+                pred_port = parts[2]
+                succ_ip = parts[3]
+                succ_port = parts[4]
+
+                self.predecessor_ip = pred_ip
+                self.predecessor_port = pred_port
+                self.predecessor_id = self.hash_id(f"{pred_ip}:{pred_port}")
+
+                self.successor_ip = succ_ip
+                self.successor_port = succ_port
+                self.successor_id = self.hash_id(f"{succ_ip}:{succ_port}")
+
+                print(f"Successfully joined chord ring with pred {self.predecessor_id} and succ {self.successor_id}")
             else:
                 print("Unexpected join response format.", flush=True)
         except Exception as e:
@@ -181,7 +238,7 @@ class ChordNode:
 
     def print_overlay(self):
         print("Overlay (Chord Ring Topology):", flush=True)
-        print(f"Node {self.node_id} -> Successor: {self.successor} | Predecessor: {self.predecessor}", flush=True)
+        print(f"Node {self.node_id} -> Successor: {self.successor_id} | Predecessor: {self.predecessor_id}", flush=True)
 
 def chord_cli(chord_node):
     print("Chord DHT Client. Type 'help' for available commands.", flush=True)
