@@ -11,6 +11,7 @@ import sys
 
 # Question: What happens if two nodes hash to the same value? (Exceedingly rare, but still)
 
+# TODO: Maybe do not wait for response by default?
 def send_request(ip, port, msg):
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.connect((ip, port))
@@ -34,6 +35,9 @@ class ChordNode:
         self.predecessor_id = self.node_id if is_bootstrap else None
 
         self.is_bootstrap = is_bootstrap
+
+        self.keys_start = self.node_id + 1
+        self.keys_end = self.node_id
 
         self.data_store = {}
         self.replication_factor = replication_factor
@@ -160,6 +164,8 @@ class ChordNode:
         self.predecessor_port = int(new_node_port)
         self.predecessor_id = new_node_id
 
+        self.keys_start = new_node_id + 1
+
         return "Successfully updated pred info"
     
     def update_succ_info(self, new_node_ip, new_node_port):
@@ -203,6 +209,8 @@ class ChordNode:
             self.predecessor_ip = self.successor_ip = new_ip
             self.predecessor_port = self.successor_port = new_port
             self.predecessor_id = self.successor_id = new_node_id
+
+            self.keys_start = new_node_id + 1
             print(response, flush=True)
             return response
         else:
@@ -239,7 +247,11 @@ class ChordNode:
                 self.successor_port = succ_port
                 self.successor_id = self.hash_id(f"{succ_ip}:{succ_port}")
 
-                print(f"Successfully joined chord ring with pred {self.predecessor_id} and succ {self.successor_id}")
+                self.keys_start = self.predecessor_id + 1 # self.keys_end has already been defined
+
+                print(f"Successfully joined chord ring with pred {self.predecessor_id} and succ {self.successor_id}", flush=True)
+                print(f"Key range start: {self.keys_start}")
+                print(f"Key range end: {self.keys_end}")
             else:
                 print("Unexpected join response format.", flush=True)
         except Exception as e:
@@ -266,6 +278,7 @@ class ChordNode:
     def print_overlay(self):
         print("Overlay (Chord Ring Topology):", flush=True)
         print(f"Node {self.node_id} -> Successor: {self.successor_id} | Predecessor: {self.predecessor_id}", flush=True)
+        print(f"keys_start={self.keys_start}, keys_end={self.keys_end}")
 
 def chord_cli(chord_node):
     print("Chord DHT Client. Type 'help' for available commands.", flush=True)
