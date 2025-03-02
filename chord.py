@@ -34,6 +34,8 @@ class ChordNode:
         self.predecessor_port = self.port if is_bootstrap else None
         self.predecessor_id = self.node_id if is_bootstrap else None
 
+        self.is_bootstrap = is_bootstrap
+
         self.data_store = {}
         self.replication_factor = replication_factor
         self.consistency_model = consistency_model
@@ -98,6 +100,8 @@ class ChordNode:
                 response = self.find_insert_position(args[1], args[2])
             elif command == 'update_pred_info':
                 response = self.update_pred_info(args[1], args[2])
+            elif command == 'update_succ_info':
+                response = self.update_succ_info(args[1], args[2])
             else:
                 response = "Unknown command"
             conn.sendall(response.encode())
@@ -158,6 +162,15 @@ class ChordNode:
         self.predecessor_id = new_node_id
 
         return "Successfully updated pred info"
+    
+    def update_succ_info(self, new_node_ip, new_node_port):
+        print("Entered update_succ_info")
+        new_node_id = self.hash_id(f"{new_node_ip}:{new_node_port}")
+        self.successor_ip = new_node_ip
+        self.successor_port = int(new_node_port)
+        self.successor_id = new_node_id
+
+        return "Successfully updated succ info"
 
     def find_insert_position(self, new_node_ip, new_node_port):
         new_node_id = self.hash_id(f"{new_node_ip}:{new_node_port}")
@@ -234,6 +247,21 @@ class ChordNode:
             print("Error joining chord ring:", e, flush=True)
 
     def depart(self):
+        # All we have to do here is inform our predecessor and successor
+        print(f"Node {self.node_id} beginning to depart")
+
+        # TODO: Maybe issue a single request if there are only two nodes remaining?
+
+        cmd = f"update_pred_info {self.predecessor_ip} {self.predecessor_port}"
+        print(f"Updating {self.successor_ip} {self.successor_port}")
+        resp = send_request(self.successor_ip, int(self.successor_port), cmd)
+        print(resp)
+
+        cmd = f"update_succ_info {self.successor_ip} {self.successor_port}"
+        print(f"Updating {self.predecessor_ip} {self.predecessor_port}")
+        resp = send_request(self.predecessor_ip, int(self.predecessor_port), cmd)
+        print(resp)
+
         return f"Node {self.node_id} is departing from the network."
 
     def print_overlay(self):
@@ -271,8 +299,12 @@ def chord_cli(chord_node):
                 response = chord_node.query(key)
                 print(response, flush=True)
             elif cmd == "depart":
-                response = chord_node.depart()
-                print(response, flush=True)
+                if not chord_node.is_bootstrap:
+                    response = chord_node.depart()
+                    print(response, flush=True)
+                    break
+                else:
+                    print("Bootstrap node cannot depart")
             elif cmd == "overlay":
                 chord_node.print_overlay()
             elif cmd == "help":
