@@ -122,11 +122,11 @@ class ChordNode:
             elif command == 'find_insert_position':
                 response = self.find_insert_position(args[1], args[2])
             elif command == 'update_pred_info':
-                response = self.update_pred_info(args[1], args[2])
+                response = self.update_pred_info(args[1], args[2], eval(args[3]), eval("".join(args[4:])))
             elif command == 'update_succ_info':
                 response = self.update_succ_info(args[1], args[2])
             elif command == 'update_pred_and_succ':
-                response = self.update_pred_and_succ(args[1], args[2], args[3], args[4])
+                response = self.update_pred_and_succ(args[1], args[2], args[3], args[4], eval("".join(args[5:])))
             elif command == 'insert_resp':
                 print("Successful insertion", flush=True)
                 response = "Ok insert"
@@ -155,16 +155,13 @@ class ChordNode:
         finally:
             conn.close()
 
+    def lies_in_range(self, start, end, key_hash):
+        return (start <= key_hash <= end) or \
+            (end < start <= key_hash) or \
+            (key_hash <= end < start)
+
     def is_responsible(self, key_hash):
-        # print("Entering is_responsible")
-        # print(f"self.keys_start={self.keys_start}")
-        # print(f"self.keys_end={self.keys_end}")
-        # print(f"self.key_hash={key_hash}")
-        res = (self.keys_start <= key_hash <= self.keys_end) or \
-            (self.keys_end < self.keys_start <= key_hash) or \
-            (key_hash <= self.keys_end < self.keys_start)
-        # print(f"res={res}", flush=True)
-        return res
+        return self.lies_in_range(self.keys_start, self.keys_end, key_hash)
         
 
     def forward_request(self, initial_ip, initial_port, operation, key, value=None):
@@ -246,7 +243,8 @@ class ChordNode:
         else:
             return self.forward_request(initial_ip, initial_port, "delete", key, value)
 
-    def update_pred_and_succ(self, pred_ip, pred_port, succ_ip, succ_port):
+    def update_pred_and_succ(self, pred_ip, pred_port, succ_ip, succ_port, data_store={}):
+        print(f"Entering update pred and succ, data_store={data_store}")
         pred_id = self.hash_id(f"{pred_ip}:{pred_port}")
         self.predecessor_ip = pred_ip
         self.predecessor_port = int(pred_port)
@@ -257,8 +255,8 @@ class ChordNode:
         self.successor_port = int(succ_port)
         self.successor_id = succ_id
 
-        # TODO: Maybe uncomment this eventually?
         self.keys_start = self.predecessor_id + 1 # self.keys_end has already been defined
+        self.data_store |= data_store # TODO: Maybe plain = instead of |=?
 
         print(f"Successfully joined chord ring with pred {self.predecessor_id} and succ {self.successor_id}", flush=True)
         print(f"Key range start: {self.keys_start}", flush=True)
@@ -266,15 +264,31 @@ class ChordNode:
 
         return "Successfully updated pred and succ"
 
-    def update_pred_info(self, new_node_ip, new_node_port):
+    def update_pred_info(self, new_node_ip, new_node_port, departing=False, data_store={}):
         new_node_id = self.hash_id(f"{new_node_ip}:{new_node_port}")
         self.predecessor_ip = new_node_ip
         self.predecessor_port = int(new_node_port)
         self.predecessor_id = new_node_id
 
+        old_start = self.keys_start
         self.keys_start = new_node_id + 1
 
-        return "Successfully updated pred info"
+        if departing:
+            # In this case, the node before us left, so we have to augment our data_store
+            self.data_store |= data_store
+
+            return "success {}"
+        else:
+            ret_dict = {}
+            for key, value in self.data_store.items():
+                print(self.hash_id(key))
+                if self.lies_in_range(old_start, self.keys_start - 1, self.hash_id(key)):
+                    ret_dict[key] = value
+            
+            for key in ret_dict.keys():
+                del self.data_store[key]
+
+            return f"success {ret_dict}"
     
     def update_succ_info(self, new_node_ip, new_node_port):
         new_node_id = self.hash_id(f"{new_node_ip}:{new_node_port}")
@@ -293,10 +307,13 @@ class ChordNode:
                 (self.node_id > self.successor_id and (new_node_id > self.node_id or new_node_id <= self.successor_id)):
             response = f"{self.ip} {self.port} {self.successor_ip} {self.successor_port}"
 
-            cmd = f"update_pred_info {new_node_ip} {new_node_port}"
-            send_request(self.successor_ip, self.successor_port, cmd)
+            cmd = f"update_pred_info {new_node_ip} {new_node_port} {False} {{}}"
+            resp = send_request(self.successor_ip, self.successor_port, cmd, return_resp=True)
+            print(f"resp: {resp}", flush=True)
+            new_data_store = eval("".join(resp.split()[1:]))
+            print(new_data_store)
 
-            cmd = f"update_pred_and_succ {self.ip} {self.port} {self.successor_ip} {self.successor_port}"
+            cmd = f"update_pred_and_succ {self.ip} {self.port} {self.successor_ip} {self.successor_port} {new_data_store}"
 
             self.successor_ip = new_node_ip
             self.successor_port = new_node_port
@@ -326,10 +343,20 @@ class ChordNode:
             self.predecessor_port = self.successor_port = new_port
             self.predecessor_id = self.successor_id = new_node_id
 
+            old_start = self.keys_start
+
             self.keys_start = new_node_id + 1
             print(response, flush=True)
 
-            cmd = f"update_pred_and_succ {self.ip} {self.port} {self.ip} {self.port}"
+            ret_dict = {}
+            for key, value in self.data_store.items():
+                if self.lies_in_range(old_start, self.keys_start - 1, self.hash_id(key)):
+                    ret_dict[key] = value
+            
+            for key in ret_dict.keys():
+                del self.data_store[key]
+
+            cmd = f"update_pred_and_succ {self.ip} {self.port} {self.ip} {self.port} {ret_dict}"
             send_request(new_ip, new_port, cmd)
 
             return response
@@ -387,7 +414,7 @@ class ChordNode:
 
         # TODO: Maybe issue a single request if there are only two nodes remaining?
 
-        cmd = f"update_pred_info {self.predecessor_ip} {self.predecessor_port}"
+        cmd = f"update_pred_info {self.predecessor_ip} {self.predecessor_port} {True} {self.data_store}"
         print(f"Updating {self.successor_ip} {self.successor_port}", flush=True)
         resp = send_request(self.successor_ip, int(self.successor_port), cmd)
         print(resp, flush=True)
