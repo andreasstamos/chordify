@@ -1,8 +1,10 @@
-import socket
+from flask import Flask, request, jsonify
 import threading
 import hashlib
 import sys
 import json
+import requests
+import time
 
 # TODO list:
 # 1. Join/Depart -- DONE
@@ -14,23 +16,25 @@ import json
 # Question: What happens if two nodes hash to the same value? (Exceedingly rare, but still)
 
 # TODO: Maybe do not wait for response by default?
-def send_request(ip, port, msg, return_resp = False):
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.connect((ip, port))
-    s.sendall(msg.encode())
-    
-    if return_resp:
-        response = s.recv(1024).decode()
-    else:
-        response = ""
-    s.close()
 
-    return response
+app = Flask(__name__)
+
+def send_request(ip, port, endpoint, data, return_resp=False):
+    url = f"http://{ip}:{port}/{endpoint}"
+    try:
+        response = requests.post(url, json=data)
+        if return_resp:
+            return response.json()
+        else:
+            return response.text
+    except Exception as e:
+        print("Error sending request:", e)
+        return None
 
 class ChordNode:
     def __init__(self, ip, port, replication_factor=3, consistency_model='eventual', is_bootstrap=False):
         self.ip = ip
-        self.port = port
+        self.port = port # int(port)
         self.node_id = self.hash_id(f"{ip}:{port}")
 
         self.successor_ip = self.ip if is_bootstrap else None
@@ -49,111 +53,9 @@ class ChordNode:
         self.data_store = {}
         self.replication_factor = replication_factor
         self.consistency_model = consistency_model
-        self.server_ready = threading.Event()
 
     def hash_id(self, value):
         return int(hashlib.sha1(value.encode()).hexdigest(), 16)
-
-    def start_server(self):
-        server_thread = threading.Thread(target=self.server_loop)
-        server_thread.daemon = True
-        server_thread.start()
-        self.server_ready.wait()
-
-    def server_loop(self):
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        s.bind((self.ip, self.port))
-        s.listen(5)
-        print(f"Node {self.node_id} listening on {self.ip}:{self.port}", flush=True)
-        self.server_ready.set()
-        while True:
-            conn, addr = s.accept()
-            client_thread = threading.Thread(target=self.handle_client, args=(conn, addr))
-            client_thread.daemon = True
-            client_thread.start()
-
-    def handle_client(self, conn, addr):
-        try:
-            data = conn.recv(1024).decode().strip()
-            if not data:
-                return
-            args = data.split()
-            command = args[0]
-            if command == 'insert':
-                if len(args) < 5:
-                    response = "Error: Missing key, value or initial node details."
-                else:
-                    initial_ip, initial_port = args[1], args[2]
-                    key, value = args[3], args[4]
-                    response = self.insert(initial_ip, int(initial_port), key, value)
-            elif command == 'query':
-                if len(args) < 4:
-                    response = "Error: Missing key, or initial node details."
-                else:
-                    initial_ip, initial_port = args[1], args[2]
-                    key = args[3]
-                    self.query(initial_ip, int(initial_port), key)
-                    response = "Successfully handled query"
-            elif command == 'query_star':
-                if len(args) < 4:
-                    response = "Error: Missing value, or initial node details."
-                else:
-                    initial_ip, initial_port = args[1], args[2]
-                    value = "".join(args[3:])
-                    print(f"value={value}")
-                    self.query_star(initial_ip, int(initial_port), eval(value))
-                    response = "Successfully handled query_star"
-
-            elif command == 'delete':
-                if len(args) < 4:
-                    se = "Error: Missing key, or initial node details."
-                else:
-                    initial_ip, initial_port = args[1], args[2]
-                    key = args[3]
-                    response = self.delete(initial_ip, int(initial_port), key)
-            elif command == 'join':
-                if len(args) < 2:
-                    response = "Error: Missing join info."
-                else:
-                    response = self.join_request(args[1])
-            elif command == 'depart':
-                response = self.depart()
-            elif command == 'find_insert_position':
-                response = self.find_insert_position(args[1], args[2])
-            elif command == 'update_pred_info':
-                response = self.update_pred_info(args[1], args[2], eval(args[3]), eval("".join(args[4:])))
-            elif command == 'update_succ_info':
-                response = self.update_succ_info(args[1], args[2])
-            elif command == 'update_pred_and_succ':
-                response = self.update_pred_and_succ(args[1], args[2], args[3], args[4], eval("".join(args[5:])))
-            elif command == 'insert_resp':
-                print("Successful insertion", flush=True)
-                response = "Ok insert"
-            elif command == 'query_resp':
-                print("Query result:", flush=True)
-                if args[1] == "key":
-                    print("Key not found", flush=True)
-                else:
-                    print(args[1], flush=True)
-                response = "Ok query"
-            elif command == 'query_star_resp':
-                print("Query result:", flush=True)
-                print("".join(args[1:]), flush=True)
-                response = "Ok query_star"
-            elif command == 'delete_resp':
-                if args[1] == "success":
-                    print("Successful deletion", flush=True)
-                else:
-                    print("Key not found", flush=True)
-                response = "Ok delete"
-            else:
-                response = "Unknown command"
-            conn.sendall(response.encode())
-        except Exception as e:
-            print("Error handling client:", e)
-        finally:
-            conn.close()
 
     def lies_in_range(self, start, end, key_hash):
         return (start <= key_hash <= end) or \
@@ -165,15 +67,9 @@ class ChordNode:
         
 
     def forward_request(self, initial_ip, initial_port, operation, key, value=None):
-        if operation == "insert":
-            cmd = f"insert {initial_ip} {initial_port} {key} {value}"
-        elif operation == "query_star":
-            cmd = f"query_star {initial_ip} {initial_port} {value}"
-        else:
-            cmd = f"{operation} {initial_ip} {initial_port} {key}"
-
-        print(f"Forwarding {operation} request for key '{key}' to the next node.", flush=True)
-        return send_request(self.successor_ip, self.successor_port, cmd)
+        data = {"initial_ip": initial_ip, "initial_port": initial_port, "key": key, "value": value}
+        print(f"Forwarding {operation} request for key '{key}' to the next node.")
+        return send_request(self.successor_ip, self.successor_port, operation, data)
 
     def replicate(self, operation, key, value=None):
         pass
@@ -189,11 +85,8 @@ class ChordNode:
                 self.data_store[key] = value
             
             self.replicate('insert', key, value)
-            
             # Inform initial node of result
-            cmd = f"insert_resp"
-            send_request(initial_ip, initial_port, cmd)
-
+            send_request(initial_ip, initial_port, "insert_resp", {})
             return f"Inserted/Updated key '{key}' with value '{self.data_store[key]}' at node {self.node_id}"
         else:
             return self.forward_request(initial_ip, initial_port, "insert", key, value)
@@ -202,8 +95,7 @@ class ChordNode:
         value = value | self.data_store
         if (self.successor_ip == initial_ip and self.successor_port == initial_port):
             # We reached the end, send result back to initial node
-            cmd = f"query_star_resp {value}"
-            send_request(initial_ip, initial_port, cmd)
+            send_request(initial_ip, initial_port, "query_star_resp", {"result": value})
         else:
             self.forward_request(initial_ip, initial_port, "query_star", "*", value)
 
@@ -217,8 +109,8 @@ class ChordNode:
             res = self.data_store.get(key, "Key not found")
 
             # Inform initial node of result
-            cmd = f"query_resp {res}"
-            send_request(initial_ip, initial_port, cmd)
+            send_request(initial_ip, initial_port, "query_resp", {"result": res})
+            
         else:
             return self.forward_request(initial_ip, initial_port, "query", key, value)
 
@@ -230,15 +122,13 @@ class ChordNode:
                 self.replicate('delete', key)
 
                 # Inform initial node of result
-                cmd = f"delete_resp success"
-                send_request(initial_ip, initial_port, cmd)
-                
+
+                send_request(initial_ip, initial_port, "delete_resp", {"status": "success"})
                 return f"Deleted key '{key}' from node {self.node_id}"
             else:
                 # Inform initial node of result
-                cmd = f"delete_resp key_not_found"
-                send_request(initial_ip, initial_port, cmd)
 
+                send_request(initial_ip, initial_port, "delete_resp", {"status": "key_not_found"})
                 return "Key not found"
         else:
             return self.forward_request(initial_ip, initial_port, "delete", key, value)
@@ -276,20 +166,17 @@ class ChordNode:
         if departing:
             # In this case, the node before us left, so we have to augment our data_store
             self.data_store |= data_store
-
-            return "success {}"
+            return {"status": "success"}
         else:
             ret_dict = {}
             for key, value in self.data_store.items():
-                print(self.hash_id(key))
                 if self.lies_in_range(old_start, self.keys_start - 1, self.hash_id(key)):
                     ret_dict[key] = value
-            
-            for key in ret_dict.keys():
+            for key in list(ret_dict.keys()):
                 del self.data_store[key]
+            return {"status": "success", "data_store": ret_dict}
 
-            return f"success {ret_dict}"
-    
+
     def update_succ_info(self, new_node_ip, new_node_port):
         new_node_id = self.hash_id(f"{new_node_ip}:{new_node_port}")
         self.successor_ip = new_node_ip
@@ -299,34 +186,39 @@ class ChordNode:
         return "Successfully updated succ info"
 
     def find_insert_position(self, new_node_ip, new_node_port):
+        new_node_port = int(new_node_port)
         new_node_id = self.hash_id(f"{new_node_ip}:{new_node_port}")
-        print(f"Trying to insert {new_node_id}", flush=True)
-        # In any of these cases, we are the predecessor of the new node
+        print(f"Trying to insert {new_node_id}")
         if (self.successor_id == self.node_id) or \
-            (self.node_id < new_node_id <= self.successor_id) or \
-                (self.node_id > self.successor_id and (new_node_id > self.node_id or new_node_id <= self.successor_id)):
+        (self.node_id < new_node_id <= self.successor_id) or \
+        (self.node_id > self.successor_id and (new_node_id > self.node_id or new_node_id <= self.successor_id)):
             response = f"{self.ip} {self.port} {self.successor_ip} {self.successor_port}"
-
-            cmd = f"update_pred_info {new_node_ip} {new_node_port} {False} {{}}"
-            resp = send_request(self.successor_ip, self.successor_port, cmd, return_resp=True)
-            print(f"resp: {resp}", flush=True)
-            new_data_store = eval("".join(resp.split()[1:]))
-            print(new_data_store)
-
-            cmd = f"update_pred_and_succ {self.ip} {self.port} {self.successor_ip} {self.successor_port} {new_data_store}"
-
+            resp = send_request(
+                self.successor_ip, self.successor_port,
+                "update_pred_info",
+                {"new_node_ip": new_node_ip, "new_node_port": new_node_port, "departing": False, "data_store": {}},
+                return_resp=True
+            )
+            if resp is not None and resp.get("status") == "success":
+                new_data_store = resp.get("data_store", {})
+            else:
+                new_data_store = {}
+            cmd_data = {
+                "pred_ip": self.ip,
+                "pred_port": self.port,
+                "succ_ip": self.successor_ip,
+                "succ_port": self.successor_port,
+                "data_store": new_data_store
+            }
             self.successor_ip = new_node_ip
             self.successor_port = new_node_port
             self.successor_id = new_node_id
-
-            send_request(new_node_ip, new_node_port, cmd)
-
+            send_request(new_node_ip, new_node_port, "update_pred_and_succ", cmd_data)
             return response
-        
-        # Otherwise, we have to forward the request to our successor
-        cmd = f"find_insert_position {new_node_ip} {new_node_port}"
-        # return send_request(self.successor_id, self.successor_port, cmd)
-        send_request(self.successor_id, self.successor_port, cmd)
+        else:
+            data = {"new_node_ip": new_node_ip, "new_node_port": new_node_port}
+            send_request(self.successor_ip, self.successor_port, "find_insert_position", data)
+            return "Forwarded find_insert_position request"
 
     def join_request(self, new_node_info):
         try:
@@ -355,10 +247,10 @@ class ChordNode:
             
             for key in ret_dict.keys():
                 del self.data_store[key]
-
-            cmd = f"update_pred_and_succ {self.ip} {self.port} {self.ip} {self.port} {ret_dict}"
-            send_request(new_ip, new_port, cmd)
-
+            send_request(
+                new_ip, new_port, "update_pred_and_succ",
+                {"pred_ip": self.ip, "pred_port": self.port, "succ_ip": self.ip, "succ_port": self.port, "data_store": ret_dict}
+            )
             return response
         else:
             # insert_after_ip, insert_after_port, successor_ip, successor_port = self.find_insert_position(new_ip, new_port).split()
@@ -379,32 +271,8 @@ class ChordNode:
 
     def join_existing(self, bootstrap_ip, bootstrap_port):
         try:
-            join_cmd = f"join {self.ip}:{self.port}"
-            send_request(bootstrap_ip, bootstrap_port, join_cmd)
-            # print("Join response:", response, flush=True)
-
-            # parts = response.split()
-            # if parts[0] == "JOIN_ACCEPTED" and len(parts) >= 5:
-            #     pred_ip = parts[1]
-            #     pred_port = parts[2]
-            #     succ_ip = parts[3]
-            #     succ_port = parts[4]
-
-            #     self.predecessor_ip = pred_ip
-            #     self.predecessor_port = pred_port
-            #     self.predecessor_id = self.hash_id(f"{pred_ip}:{pred_port}")
-
-            #     self.successor_ip = succ_ip
-            #     self.successor_port = succ_port
-            #     self.successor_id = self.hash_id(f"{succ_ip}:{succ_port}")
-
-            #     self.keys_start = self.predecessor_id + 1 # self.keys_end has already been defined
-
-            #     print(f"Successfully joined chord ring with pred {self.predecessor_id} and succ {self.successor_id}", flush=True)
-            #     print(f"Key range start: {self.keys_start}")
-            #     print(f"Key range end: {self.keys_end}")
-            # else:
-            #     print("Unexpected join response format.", flush=True)
+            join_cmd = {"new_node_info": f"{self.ip}:{self.port}"}
+            send_request(bootstrap_ip, bootstrap_port, "join", join_cmd)
         except Exception as e:
             print("Error joining chord ring:", e, flush=True)
 
@@ -412,16 +280,18 @@ class ChordNode:
         # All we have to do here is inform our predecessor and successor
         print(f"Node {self.node_id} beginning to depart", flush=True)
 
-        # TODO: Maybe issue a single request if there are only two nodes remaining?
-
-        cmd = f"update_pred_info {self.predecessor_ip} {self.predecessor_port} {True} {self.data_store}"
-        print(f"Updating {self.successor_ip} {self.successor_port}", flush=True)
-        resp = send_request(self.successor_ip, int(self.successor_port), cmd)
+        # TODO: Maybe issue a single request if there are only two nodes remaining?        
+        resp = send_request(
+            self.successor_ip, int(self.successor_port),
+            "update_pred_info",
+            {"new_node_ip": self.predecessor_ip, "new_node_port": self.predecessor_port, "departing": True, "data_store": self.data_store}
+        )
         print(resp, flush=True)
-
-        cmd = f"update_succ_info {self.successor_ip} {self.successor_port}"
-        print(f"Updating {self.predecessor_ip} {self.predecessor_port}", flush=True)
-        resp = send_request(self.predecessor_ip, int(self.predecessor_port), cmd)
+        resp = send_request(
+            self.predecessor_ip, int(self.predecessor_port),
+            "update_succ_info",
+            {"new_node_ip": self.successor_ip, "new_node_port": self.successor_port}
+        )
         print(resp, flush=True)
 
         return f"Node {self.node_id} is departing from the network."
@@ -436,6 +306,123 @@ class ChordNode:
         for key, value in self.data_store.items():
             print(f"Key: {key}, Value: {value}, hash: {self.hash_id(key)}", flush=True)
         print("Done printing Hash Table", flush=True)
+
+
+@app.route('/insert', methods=['POST'])
+def handle_insert():
+    data = request.get_json()
+    initial_ip = data.get('initial_ip')
+    initial_port = data.get('initial_port')
+    key = data.get('key')
+    value = data.get('value')
+    response = chord_node.insert(initial_ip, initial_port, key, value)
+    return jsonify({"response": response})
+
+@app.route('/query', methods=['POST'])
+def handle_query():
+    data = request.get_json()
+    initial_ip = data.get('initial_ip')
+    initial_port = data.get('initial_port')
+    key = data.get('key')
+    response = chord_node.query(initial_ip, initial_port, key)
+    return jsonify({"response": response})
+
+@app.route('/query_star', methods=['POST'])
+def handle_query_star():
+    data = request.get_json()
+    initial_ip = data.get('initial_ip')
+    initial_port = data.get('initial_port')
+    value = data.get('value', {})
+    response = chord_node.query_star(initial_ip, initial_port, value)
+    return jsonify({"response": response})
+
+@app.route('/delete', methods=['POST'])
+def handle_delete():
+    data = request.get_json()
+    initial_ip = data.get('initial_ip')
+    initial_port = data.get('initial_port')
+    key = data.get('key')
+    response = chord_node.delete(initial_ip, initial_port, key)
+    return jsonify({"response": response})
+
+@app.route('/join', methods=['POST'])
+def handle_join():
+    data = request.get_json()
+    new_node_info = data.get('new_node_info')
+    response = chord_node.join_request(new_node_info)
+    return jsonify({"response": response})
+
+@app.route('/depart', methods=['POST'])
+def handle_depart():
+    response = chord_node.depart()
+    return jsonify({"response": response})
+
+@app.route('/find_insert_position', methods=['POST'])
+def handle_find_insert_position():
+    data = request.get_json()
+    new_node_ip = data.get('new_node_ip')
+    new_node_port = data.get('new_node_port')
+    response = chord_node.find_insert_position(new_node_ip, new_node_port)
+    return jsonify({"response": response})
+
+@app.route('/update_pred_info', methods=['POST'])
+def handle_update_pred_info():
+    data = request.get_json()
+    new_node_ip = data.get('new_node_ip')
+    new_node_port = data.get('new_node_port')
+    departing = data.get('departing', False)
+    ds = data.get('data_store', {})
+    response = chord_node.update_pred_info(new_node_ip, new_node_port, departing, ds)
+    return jsonify(response)
+
+
+@app.route('/update_succ_info', methods=['POST'])
+def handle_update_succ_info():
+    data = request.get_json()
+    new_node_ip = data.get('new_node_ip')
+    new_node_port = data.get('new_node_port')
+    response = chord_node.update_succ_info(new_node_ip, new_node_port)
+    return jsonify({"response": response})
+
+@app.route('/update_pred_and_succ', methods=['POST'])
+def handle_update_pred_and_succ():
+    data = request.get_json()
+    pred_ip = data.get('pred_ip')
+    pred_port = data.get('pred_port')
+    succ_ip = data.get('succ_ip')
+    succ_port = data.get('succ_port')
+    ds = data.get('data_store', {})
+    response = chord_node.update_pred_and_succ(pred_ip, pred_port, succ_ip, succ_port, ds)
+    return jsonify({"response": response})
+
+@app.route('/insert_resp', methods=['POST'])
+def handle_insert_resp():
+    print("Successful insertion")
+    return jsonify({"response": "Ok insert"})
+
+@app.route('/query_resp', methods=['POST'])
+def handle_query_resp():
+    data = request.get_json()
+    result = data.get('result')
+    print("Query result:", result)
+    return jsonify({"response": "Ok query"})
+
+@app.route('/query_star_resp', methods=['POST'])
+def handle_query_star_resp():
+    data = request.get_json()
+    result = data.get('result')
+    print("Query star result:", result)
+    return jsonify({"response": "Ok query_star"})
+
+@app.route('/delete_resp', methods=['POST'])
+def handle_delete_resp():
+    data = request.get_json()
+    status = data.get('status')
+    if status == "success":
+        print("Successful deletion")
+    else:
+        print("Key not found")
+    return jsonify({"response": "Ok delete"})
 
 def chord_cli(chord_node, ip, port):
     print("Chord DHT Client. Type 'help' for available commands.", flush=True)
@@ -497,6 +484,9 @@ def chord_cli(chord_node, ip, port):
         except Exception as e:
             print("Error:", e, flush=True)
 
+def start_flask_app(ip, port):
+    app.run(host=ip, port=port, threaded=True)
+
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == 'join':
         if len(sys.argv) != 6:
@@ -507,12 +497,18 @@ if __name__ == "__main__":
         node_ip = sys.argv[4]
         node_port = int(sys.argv[5])
         chord_node = ChordNode(node_ip, node_port, replication_factor=3, consistency_model="eventual")
+        flask_thread = threading.Thread(target=start_flask_app, args=(node_ip, node_port))
+        flask_thread.daemon = True
+        flask_thread.start()
+        # TODO: alternative?       
+        time.sleep(1)
         chord_node.join_existing(bootstrap_ip, bootstrap_port)
-        chord_node.start_server()
         chord_cli(chord_node, node_ip, node_port)
     else:
         bootstrap_ip = "127.0.0.1"
         bootstrap_port = 5000
         chord_node = ChordNode(bootstrap_ip, bootstrap_port, replication_factor=3, consistency_model="eventual", is_bootstrap=True)
-        chord_node.start_server()
+        flask_thread = threading.Thread(target=start_flask_app, args=(bootstrap_ip, bootstrap_port))
+        flask_thread.daemon = True
+        flask_thread.start()
         chord_cli(chord_node, bootstrap_ip, bootstrap_port)
