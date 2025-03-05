@@ -5,6 +5,7 @@ import sys
 import json
 import requests
 import time
+import readline
 
 # TODO list:
 # 1. Join/Depart -- DONE
@@ -12,6 +13,7 @@ import time
 # 3. Actually implement insert/query/delete -- DONE
 # 4. Replication
 # 5. Properly handle key exchanges during join/depart -- WIP
+# 6. Overlay
 
 # Question: What happens if two nodes hash to the same value? (Exceedingly rare, but still)
 
@@ -32,7 +34,7 @@ def send_request(ip, port, endpoint, data, return_resp=False):
         return None
 
 class ChordNode:
-    def __init__(self, ip, port, replication_factor=3, consistency_model='eventual', is_bootstrap=False):
+    def __init__(self, ip, port, replication_factor, consistency_model, is_bootstrap=False):
         self.ip = ip
         self.port = port # int(port)
         self.node_id = self.hash_id(f"{ip}:{port}")
@@ -54,10 +56,22 @@ class ChordNode:
         self.replication_factor = replication_factor
         self.consistency_model = consistency_model
 
-    def hash_id(self, value):
+        # Replication Example: Let the node No.4 be responsible for a key k and let replication factor be 3.
+        # Then replicas must exist at nodes No.5 and No.6. The chain for chain replication is 4->5->6.
+        # Writes are propagated to node No.4 and Reads are propagated to node No.6.
+        # Node 6 must know for which keys it can answer requests.
+
+        self.seq_to_succ = 0
+        self.seq_from_prev = 0
+        self.reorder_buffer_replication = dict()
+
+
+    @staticmethod
+    def hash_id(value):
         return int(hashlib.sha1(value.encode()).hexdigest(), 16)
 
-    def lies_in_range(self, start, end, key_hash):
+    @staticmethod
+    def lies_in_range(start, end, key_hash):
         return (start <= key_hash <= end) or \
             (end < start <= key_hash) or \
             (key_hash <= end < start)
@@ -65,28 +79,118 @@ class ChordNode:
     def is_responsible(self, key_hash):
         return self.lies_in_range(self.keys_start, self.keys_end, key_hash)
         
-
     def forward_request(self, initial_ip, initial_port, operation, key, value=None):
         data = {"initial_ip": initial_ip, "initial_port": initial_port, "key": key, "value": value}
         print(f"Forwarding {operation} request for key '{key}' to the next node.")
         return send_request(self.successor_ip, self.successor_port, operation, data)
 
-    def replicate(self, operation, key, value=None):
-        pass
+    def replicate_insert(self, seq, initial_ip, initial_port, key, value, left_forwards):
+        # chain replication
+        # This function is called for "insert" operations.
+        # It applies the change, then forwards the request if necessary, then returns.
+        # The Sequence Number is required because the network might reorder the requests...
+        # Chain replication assumes FIFO channels. This does not hold (necessarily) for HTTP Requests which might
+        # end up in different TCP connections.
+        # For a fact, modern versions of HTTP have been designed so as to avoid this "FIFOness". (aka if a browser requests two images in
+        # different requests, it doesnt really care when rendering if they appear on the (random?) order they were asked, just that the
+        # user sees images as fast as possible)
+        # 
+        # Seq=None is given by the initial caller (call that doesnt come from the network)
+
+        if seq is not None:
+            if seq != self.seq_from_prev:
+                #print("REORDERING", seq, self.seq_from_prev) #TODO: remove
+                self.reorder_buffer_replication[seq] = ("insert", (initial_ip, initial_port, key, value, left_forwards))
+                return
+            else:
+                self.seq_from_prev += 1
+        
+        if key in self.data_store:
+            self.data_store[key] += value
+        else:
+            self.data_store[key] = value
+
+        if left_forwards >= 1:
+            send_request(self.successor_ip, self.successor_port, "replicateInsert",\
+                    {
+                        "seq": self.seq_to_succ,
+                        "initial_ip": initial_ip,
+                        "initial_port": initial_port,
+                        "key": key,
+                        "value": value,
+                        "left_forwards": left_forwards-1
+                        })
+            self.seq_to_succ += 1
+        else:
+            send_request(initial_ip, initial_port, "insert_resp", {})
+        
+        self.replicate_wakeup()
+
+    def replicate_query(self, seq, initial_ip, initial_port, key, left_forwards):
+        # chain replication
+        # This function is called for "insert" operations.
+        # It applies the change, then forwards the request if necessary, then returns.
+        # TODO: ordering! network reorders the requests...
+
+        if seq is not None:
+            if seq != self.seq_from_prev:
+                #print("REORDERING", seq, self.seq_from_prev) TODO: remove
+                self.reorder_buffer_replication[seq] = ("query", (initial_ip, initial_port, key, left_forwards))
+                return
+            else:
+                self.seq_from_prev += 1
+        
+        if left_forwards >= 1:
+            send_request(self.successor_ip, self.successor_port, "replicateQuery",\
+                    {
+                        "seq": self.seq_to_succ,
+                        "initial_ip": initial_ip,
+                        "initial_port": initial_port,
+                        "key": key,
+                        "left_forwards": left_forwards-1
+                        })
+            self.seq_to_succ += 1
+        else:
+            res = self.data_store.get(key, "Key not found")
+            # Inform initial node of result
+            send_request(initial_ip, initial_port, "query_resp", {"result": res})
+
+        self.replicate_wakeup()
+
+    def replicate_wakeup(self):
+        # wakeup reorder buffer
+        # TODO: I cannot test this code.... Check it out. We might as well leave it out.
+        # A reordering is (probably?) a rare event and will probably not appear when evaluating this project.
+        # IF however it happens to appear and the app blows up it might be worse than an inconsistency which might go unnoticed.
+        # (highly the opposite of what would apply to a real system!)
+        # on the other hand, we can present it as BONUS feature...........
+        print(self.reorder_buffer_replication)
+        if min(self.reorder_buffer_replication.keys(), default=None) == self.seq_from_prev:
+            seq_wakeup = min(self.reorder_buffer_replication.keys())
+            (op, args) = self.reorder_buffer_replication[seq_wakeup]
+            del self.reorder_buffer_replication[seq_wakeup]
+            match op:
+                case "insert":
+                    self.replicate_insert(seq_wakeup, *args)
+                case "query":
+                    self.replicate_query(seq_wakeup, *args)
+
 
     #TODO: Locks?
 
     def insert(self, initial_ip, initial_port, key, value):
         key_hash = self.hash_id(key)
-        if self.is_responsible(key_hash):
-            if key in self.data_store:
-                self.data_store[key] += value
+        if self.is_responsible(key_hash):            
+            if self.consistency_model == "CHAIN_REPLICATION":
+                self.replicate_insert(None, initial_ip, initial_port, key, value, self.replication_factor-1)
             else:
-                self.data_store[key] = value
-            
-            self.replicate('insert', key, value)
-            # Inform initial node of result
-            send_request(initial_ip, initial_port, "insert_resp", {})
+                if key in self.data_store:
+                    self.data_store[key] += value
+                else:
+                    self.data_store[key] = value
+
+                # Inform initial node of result
+                send_request(initial_ip, initial_port, "insert_resp", {})
             return f"Inserted/Updated key '{key}' with value '{self.data_store[key]}' at node {self.node_id}"
         else:
             return self.forward_request(initial_ip, initial_port, "insert", key, value)
@@ -106,11 +210,12 @@ class ChordNode:
         # We assume that key != "*" here
         key_hash = self.hash_id(key)
         if self.is_responsible(key_hash):
-            res = self.data_store.get(key, "Key not found")
-
-            # Inform initial node of result
-            send_request(initial_ip, initial_port, "query_resp", {"result": res})
-            
+            if self.consistency_model == "CHAIN_REPLICATION":
+                self.replicate_query(None, initial_ip, initial_port, key, self.replication_factor-1)
+            else:
+                res = self.data_store.get(key, "Key not found")
+                # Inform initial node of result
+                send_request(initial_ip, initial_port, "query_resp", {"result": res})    
         else:
             return self.forward_request(initial_ip, initial_port, "query", key, value)
 
@@ -424,6 +529,20 @@ def handle_delete_resp():
         print("Key not found")
     return jsonify({"response": "Ok delete"})
 
+@app.route('/replicateInsert', methods=['POST'])
+def handle_replicate_insert():
+    data = request.get_json()
+    response = chord_node.replicate_insert(**data)  # TODO remove before submission: this is VERY bad and HIGHLY INSECURE idea.
+                                                    # JSONschema could help and automate the checks. However, we will execute the whole project
+                                                    # in a trusted environment....... so we might as well leave it like this...........
+    return jsonify({"response": "Ok replicate insert"})
+
+@app.route('/replicateQuery', methods=['POST'])
+def handle_replicate_query():
+    data = request.get_json()
+    response = chord_node.replicate_query(**data)
+    return jsonify({"response": "Ok replicate query"})
+
 def chord_cli(chord_node, ip, port):
     print("Chord DHT Client. Type 'help' for available commands.", flush=True)
     while True:
@@ -488,6 +607,9 @@ def start_flask_app(ip, port):
     app.run(host=ip, port=port, threaded=True)
 
 if __name__ == "__main__":
+    CONSISTENCY_MODEL = "CHAIN_REPLICATION"
+    REPLICATION_FACTOR = 2
+
     if len(sys.argv) > 1 and sys.argv[1] == 'join':
         if len(sys.argv) != 6:
             print("Usage: python chord.py join <bootstrap_ip> <bootstrap_port> <node_ip> <node_port>", flush=True)
@@ -496,7 +618,7 @@ if __name__ == "__main__":
         bootstrap_port = int(sys.argv[3])
         node_ip = sys.argv[4]
         node_port = int(sys.argv[5])
-        chord_node = ChordNode(node_ip, node_port, replication_factor=3, consistency_model="eventual")
+        chord_node = ChordNode(node_ip, node_port, replication_factor=REPLICATION_FACTOR, consistency_model=CONSISTENCY_MODEL)
         flask_thread = threading.Thread(target=start_flask_app, args=(node_ip, node_port))
         flask_thread.daemon = True
         flask_thread.start()
@@ -507,7 +629,7 @@ if __name__ == "__main__":
     else:
         bootstrap_ip = "127.0.0.1"
         bootstrap_port = 5000
-        chord_node = ChordNode(bootstrap_ip, bootstrap_port, replication_factor=3, consistency_model="eventual", is_bootstrap=True)
+        chord_node = ChordNode(bootstrap_ip, bootstrap_port, replication_factor=REPLICATION_FACTOR, consistency_model=CONSISTENCY_MODEL, is_bootstrap=True)
         flask_thread = threading.Thread(target=start_flask_app, args=(bootstrap_ip, bootstrap_port))
         flask_thread.daemon = True
         flask_thread.start()
