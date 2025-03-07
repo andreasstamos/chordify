@@ -8,15 +8,9 @@ import time
 import readline
 import inspect
 
-# TODO list:
-# 1. Join/Depart -- DONE
-# 2. Find proper position to insert in ring -- DONE
-# 3. Actually implement insert/query/delete -- DONE
-# 4. Replication
-# 5. Properly handle key exchanges during join/depart -- WIP
-# 6. Overlay
-
-# Question: What happens if two nodes hash to the same value? (Exceedingly rare, but still)
+# Question: What happens if two nodes hash to the same value?
+# For n nodes, the probability is ~ n^2/(2*2**160). (sha1 is 160 bits)
+# For 1000 nodes this is 3e-43. we can accept this.
 
 # TODO: Maybe do not wait for response by default?
 
@@ -53,11 +47,9 @@ class ChordNode:
 
         self.successor_ip = self.ip if is_bootstrap else None
         self.successor_port = self.port if is_bootstrap else None
-        self.successor_id = self.node_id if is_bootstrap else None
 
         self.predecessor_ip = self.ip if is_bootstrap else None
         self.predecessor_port = self.port if is_bootstrap else None
-        self.predecessor_id = self.node_id if is_bootstrap else None
 
         self.is_bootstrap = is_bootstrap
 
@@ -201,7 +193,7 @@ class ChordNode:
     @with_kwargs
     def query_star(self, initial_ip, initial_port, value=None, _kwargs=None):
         if (value is not None and self.ip == initial_ip and self.port == initial_port):
-            print("Query star result:", result)
+            print("Query star result:", value)
         else:
             if value is None:
                 value = {}
@@ -238,24 +230,21 @@ class ChordNode:
 
         self.predecessor_ip = new_node_ip
         self.predecessor_port = int(new_node_port)
-        self.predecessor_id = new_node_id
 
-        self.shift_replicas(0, self.keys_start, self.keys_end)
+        self.shift_up_replicas(0, self.keys_start, self.keys_end)
 
     def join_response(self, predecessor_ip, predecessor_port, successor_ip, successor_port, keys_start, keys_end, data_store):
         self.predecessor_ip   = predecessor_ip
         self.predecessor_port = predecessor_port
-        self.predecessor_id   = self.hash_id(f"{self.predecessor_ip}:{self.predecessor_port}")
         self.successor_ip     = successor_ip
         self.successor_port   = successor_port
-        self.successor_id     = self.hash_id(f"{self.successor_ip}:{self.successor_port}")
         self.keys_start       = keys_start
         self.keys_end         = keys_end
         self.data_store       = data_store
 
 
-    def shift_replicas(self, distance, exclude_start, exclude_end):
-        for i in range(distance+2, self.replication_factor):
+    def shift_up_replicas(self, distance, exclude_start, exclude_end):
+        for i in range(distance+2, self.replication_factor)[::-1]:
             self_data_store[i] = self_data_store[i-1] # distance increased
         if distance+1 < self.replication_factor:
             self.data_store[distance+1] =\
@@ -266,7 +255,7 @@ class ChordNode:
                 self.lies_in_range(exclude_start, exclude_end, self.hash_id(k))}
 
         if distance < self.replication_factor-1:
-           self.forward_request("shiftReplicas", {
+           self.forward_request("shiftUpReplicas", {
                 "distance": distance+1,
                 "exclude_start": exclude_start,
                 "exclude_end":   exclude_end
@@ -296,29 +285,46 @@ class ChordNode:
         new_node_id = self.hash_id(f"{new_node_ip}:{new_node_port}")
         self.successor_ip = new_node_ip
         self.successor_port = int(new_node_port)
-        self.successor_id = new_node_id
 
         return "Successfully updated succ info"
 
     def depart(self):
-        # All we have to do here is inform our predecessor and successor
         print(f"Node {self.node_id} beginning to depart", flush=True)
 
-        # TODO: Maybe issue a single request if there are only two nodes remaining?        
-        resp = send_request(
-            self.successor_ip, int(self.successor_port),
-            "update_pred_info",
-            {"new_node_ip": self.predecessor_ip, "new_node_port": self.predecessor_port, "departing": True, "data_store": self.data_store}
-        )
-        print(resp, flush=True)
-        resp = send_request(
-            self.predecessor_ip, int(self.predecessor_port),
-            "update_succ_info",
-            {"new_node_ip": self.successor_ip, "new_node_port": self.successor_port}
-        )
-        print(resp, flush=True)
+        self.forward_request("departPred", {
+            "keys_start": self.keys_start,
+            "predecessor_ip": self.predecessor_ip,
+            "predecessor_port": self.predecessor_port,
+            "maxdistance_replica": self.data_store[-1]
+            })
 
+        send_request(self.predecessor_ip, self.predecessor_port, "update_succ_info",
+                {"new_node_ip": self.successor_ip, "new_node_port": self.successor_port}
+        )
+
+        exiting = True
         return f"Node {self.node_id} is departing from the network."
+
+    def depart_pred(self, keys_start, predecessor_ip, predecessor_port, maxdistance_replica):
+        self.keys_start       = keys_start
+        self.predecessor_port = predecessor_port
+        self.predecessor_ip   = predecessor_ip
+
+        self.data_store[1] |= self.data_store[0]  # shift_down_replicas will then move this one unit of distance downwards
+        return self.shift_down_replicas(0, maxdistance_replica)
+    
+    def shift_down_replicas(self, distance, maxdistance_replica):
+        for i in range(distance, self.replication_factor-1):
+            self.data_store[i] = self.data_store[i+1]
+        old_maxdistance_replica = self.data_store[-1]
+        self.data_store[-1] = maxdistance_replica
+
+        if distance < self.replication_factor-1:
+            self.forward_request("shiftDownReplicas", {
+                "distance": distance+1,
+                "maxdistance_replica": old_maxdistance_replica
+                })
+
 
     @with_kwargs
     def overlay(self, initial_ip, initial_port, nodes=None, _kwargs=None):
@@ -382,17 +388,28 @@ def handle_join_response():
     response = chord_node.join_response(**data)
     return jsonify({"response": response})
 
-@app.route('/shiftReplicas', methods=['POST'])
-def handle_shift_replicas():
+@app.route('/shiftUpReplicas', methods=['POST'])
+def handle_shift_up_replicas():
     data = request.get_json()
-    response = chord_node.shift_replicas(**data)
+    response = chord_node.shift_up_replicas(**data)
     return jsonify({"response": response})
 
-#@app.route('/depart', methods=['POST'])
-#def handle_depart():
-#    response = chord_node.depart()
-#    return jsonify({"response": response})
-#
+@app.route('/shiftDownReplicas', methods=['POST'])
+def handle_shift_down_replicas():
+    data = request.get_json()
+    response = chord_node.shift_down_replicas(**data)
+    return jsonify({"response": response})
+
+@app.route('/depart', methods=['POST'])
+def handle_depart():
+    response = chord_node.depart()
+    return jsonify({"response": response})
+
+@app.route('/departPred', methods=['POST'])
+def handle_depart_pred():
+    data = request.get_json()
+    response = chord_node.depart_pred(**data)
+    return jsonify({"response": response})
 
 @app.route('/update_succ_info', methods=['POST'])
 def handle_update_succ_info():
