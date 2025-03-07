@@ -6,6 +6,7 @@ import json
 import requests
 import time
 import readline
+import inspect
 
 # TODO list:
 # 1. Join/Depart -- DONE
@@ -18,6 +19,17 @@ import readline
 # Question: What happens if two nodes hash to the same value? (Exceedingly rare, but still)
 
 # TODO: Maybe do not wait for response by default?
+
+def with_kwargs(func):
+    sig = inspect.signature(func)
+    def inner(*args, **kwargs):
+        bound = sig.bind(*args, **kwargs)
+        bound.apply_defaults()
+        _kwargs = dict(bound.arguments)
+        _kwargs.pop('_kwargs', None)
+        _kwargs.pop('self', None)
+        return func(*args, **kwargs, _kwargs=_kwargs)
+    return inner
 
 app = Flask(__name__)
 
@@ -49,17 +61,24 @@ class ChordNode:
 
         self.is_bootstrap = is_bootstrap
 
-        self.keys_start = self.node_id + 1
-        self.keys_end = self.node_id
+        self.keys_start = self.node_id + 1 if is_bootstrap else None
+        self.keys_end = self.node_id if is_bootstrap else None
 
-        self.data_store = {}
         self.replication_factor = replication_factor
+        self.data_store = [{} for _ in range(self.replication_factor)]
         self.consistency_model = consistency_model
 
         # Replication Example: Let the node No.4 be responsible for a key k and let replication factor be 3.
         # Then replicas must exist at nodes No.5 and No.6. The chain for chain replication is 4->5->6.
         # Writes are propagated to node No.4 and Reads are propagated to node No.6.
         # Node 6 must know for which keys it can answer requests.
+
+        # README: join/depart. 
+        # when join/depart we must ensure that replication factor is kept at k.
+        # data_store[i] is the replica in distance i from the node responsible for a key.
+        # reads are performed at data_store[-1].
+        # when join the new node takes a complete 
+
 
         self.seq_to_succ = 0
         self.seq_from_prev = 0
@@ -68,7 +87,7 @@ class ChordNode:
 
     @staticmethod
     def hash_id(value):
-        return int(hashlib.sha1(value.encode()).hexdigest(), 16)
+        return int.from_bytes( hashlib.sha1(value.encode()).digest(), byteorder="little")
 
     @staticmethod
     def lies_in_range(start, end, key_hash):
@@ -79,12 +98,12 @@ class ChordNode:
     def is_responsible(self, key_hash):
         return self.lies_in_range(self.keys_start, self.keys_end, key_hash)
         
-    def forward_request(self, initial_ip, initial_port, operation, key, value=None):
-        data = {"initial_ip": initial_ip, "initial_port": initial_port, "key": key, "value": value}
-        print(f"Forwarding {operation} request for key '{key}' to the next node.")
-        return send_request(self.successor_ip, self.successor_port, operation, data)
+    def forward_request(self, endpoint, data):
+        print(f"Forwarding {endpoint} request to the next node.")
+        return send_request(self.successor_ip, self.successor_port, endpoint, data)
 
-    def replicate_insert(self, seq, initial_ip, initial_port, key, value, left_forwards):
+    @with_kwargs
+    def replicate_modify(self, seq, initial_ip, initial_port, operation, key, value, distance, _kwargs=None):
         # chain replication
         # This function is called for "insert" operations.
         # It applies the change, then forwards the request if necessary, then returns.
@@ -100,58 +119,44 @@ class ChordNode:
         if seq is not None:
             if seq != self.seq_from_prev:
                 #print("REORDERING", seq, self.seq_from_prev) #TODO: remove
-                self.reorder_buffer_replication[seq] = ("insert", (initial_ip, initial_port, key, value, left_forwards))
+                self.reorder_buffer_replication[seq] = ("modify", _kwargs)
                 return
             else:
                 self.seq_from_prev += 1
-        
-        if key in self.data_store:
-            self.data_store[key] += value
-        else:
-            self.data_store[key] = value
+       
+        match operation:
+            case "insert":
+                if key in self.data_store[distance]:
+                    self.data_store[distance][key] += value
+                else:
+                    self.data_store[distance][key] = value
+            case "delete":
+                del self.data_store[distance][key]
 
-        if left_forwards >= 1:
-            send_request(self.successor_ip, self.successor_port, "replicateInsert",\
-                    {
-                        "seq": self.seq_to_succ,
-                        "initial_ip": initial_ip,
-                        "initial_port": initial_port,
-                        "key": key,
-                        "value": value,
-                        "left_forwards": left_forwards-1
-                        })
+        if distance < self.replication_factor-1:
+            self.forward_request("replicateModify", {**_kwargs, "seq": self.seq_to_succ, "distance": distance+1})
             self.seq_to_succ += 1
         else:
-            send_request(initial_ip, initial_port, "insert_resp", {})
+            send_request(initial_ip, initial_port, "modify_resp", {"response": "ok modify"}) #TODO: better message
         
         self.replicate_wakeup()
 
-    def replicate_query(self, seq, initial_ip, initial_port, key, left_forwards):
-        # chain replication
-        # This function is called for "insert" operations.
-        # It applies the change, then forwards the request if necessary, then returns.
-        # TODO: ordering! network reorders the requests...
 
+    @with_kwargs
+    def replicate_query(self, seq, initial_ip, initial_port, key, distance, _kwargs=None):
         if seq is not None:
             if seq != self.seq_from_prev:
                 #print("REORDERING", seq, self.seq_from_prev) TODO: remove
-                self.reorder_buffer_replication[seq] = ("query", (initial_ip, initial_port, key, left_forwards))
+                self.reorder_buffer_replication[seq] = ("query", _kwargs)
                 return
             else:
                 self.seq_from_prev += 1
         
-        if left_forwards >= 1:
-            send_request(self.successor_ip, self.successor_port, "replicateQuery",\
-                    {
-                        "seq": self.seq_to_succ,
-                        "initial_ip": initial_ip,
-                        "initial_port": initial_port,
-                        "key": key,
-                        "left_forwards": left_forwards-1
-                        })
+        if distance < self.replication_factor-1:
+            self.forward_request("replicateQuery", {**_kwargs, "seq": self.seq_to_succ, "distance": distance+1})
             self.seq_to_succ += 1
         else:
-            res = self.data_store.get(key, "Key not found")
+            res = self.data_store[-1].get(key, "Key not found")
             # Inform initial node of result
             send_request(initial_ip, initial_port, "query_resp", {"result": res})
 
@@ -164,123 +169,128 @@ class ChordNode:
         # IF however it happens to appear and the app blows up it might be worse than an inconsistency which might go unnoticed.
         # (highly the opposite of what would apply to a real system!)
         # on the other hand, we can present it as BONUS feature...........
-        print(self.reorder_buffer_replication)
         if min(self.reorder_buffer_replication.keys(), default=None) == self.seq_from_prev:
             seq_wakeup = min(self.reorder_buffer_replication.keys())
-            (op, args) = self.reorder_buffer_replication[seq_wakeup]
+            (op, kwargs) = self.reorder_buffer_replication[seq_wakeup]
             del self.reorder_buffer_replication[seq_wakeup]
             match op:
-                case "insert":
-                    self.replicate_insert(seq_wakeup, *args)
+                case "modify":
+                    self.replicate_modify(seq_wakeup, **kwargs)
                 case "query":
-                    self.replicate_query(seq_wakeup, *args)
-
+                    self.replicate_query(seq_wakeup, **kwargs)
 
     #TODO: Locks?
 
-    def insert(self, initial_ip, initial_port, key, value):
+    @with_kwargs
+    def modify(self, initial_ip, initial_port, operation, key, value, _kwargs=None):
         key_hash = self.hash_id(key)
-        if self.is_responsible(key_hash):            
-            if self.consistency_model == "CHAIN_REPLICATION":
-                self.replicate_insert(None, initial_ip, initial_port, key, value, self.replication_factor-1)
-            else:
-                if key in self.data_store:
-                    self.data_store[key] += value
-                else:
-                    self.data_store[key] = value
-
-                # Inform initial node of result
-                send_request(initial_ip, initial_port, "insert_resp", {})
-            return f"Inserted/Updated key '{key}' with value '{self.data_store[key]}' at node {self.node_id}"
+        if self.is_responsible(key_hash):
+            self.replicate_modify(None, initial_ip, initial_port, operation, key, value, 0)
         else:
-            return self.forward_request(initial_ip, initial_port, "insert", key, value)
-
-    def query_star(self, initial_ip, initial_port, value={}):
-        value = value | self.data_store
-        if (self.successor_ip == initial_ip and self.successor_port == initial_port):
-            # We reached the end, send result back to initial node
-            send_request(initial_ip, initial_port, "query_star_resp", {"result": value})
-        else:
-            self.forward_request(initial_ip, initial_port, "query_star", "*", value)
-
-    def query(self, initial_ip, initial_port, key, value=None):
-        # if key == "*":
-        #     return str(self.data_store)
-        
+            return self.forward_request("modify", _kwargs)
+           
+    @with_kwargs
+    def query(self, initial_ip, initial_port, key, _kwargs=None):
         # We assume that key != "*" here
         key_hash = self.hash_id(key)
         if self.is_responsible(key_hash):
-            if self.consistency_model == "CHAIN_REPLICATION":
-                self.replicate_query(None, initial_ip, initial_port, key, self.replication_factor-1)
-            else:
-                res = self.data_store.get(key, "Key not found")
-                # Inform initial node of result
-                send_request(initial_ip, initial_port, "query_resp", {"result": res})    
+            self.replicate_query(None, initial_ip, initial_port, key, 0)
         else:
-            return self.forward_request(initial_ip, initial_port, "query", key, value)
+            return self.forward_request("query", _kwargs)
 
-    def delete(self, initial_ip, initial_port, key, value=None):
-        key_hash = self.hash_id(key)
-        if self.is_responsible(key_hash):
-            if key in self.data_store:
-                del self.data_store[key]
-                self.replicate('delete', key)
-
-                # Inform initial node of result
-
-                send_request(initial_ip, initial_port, "delete_resp", {"status": "success"})
-                return f"Deleted key '{key}' from node {self.node_id}"
-            else:
-                # Inform initial node of result
-
-                send_request(initial_ip, initial_port, "delete_resp", {"status": "key_not_found"})
-                return "Key not found"
+    @with_kwargs
+    def query_star(self, initial_ip, initial_port, value=None, _kwargs=None):
+        if (value is not None and self.ip == initial_ip and self.port == initial_port):
+            print("Query star result:", result)
         else:
-            return self.forward_request(initial_ip, initial_port, "delete", key, value)
-
-    def update_pred_and_succ(self, pred_ip, pred_port, succ_ip, succ_port, data_store={}):
-        print(f"Entering update pred and succ, data_store={data_store}")
-        pred_id = self.hash_id(f"{pred_ip}:{pred_port}")
-        self.predecessor_ip = pred_ip
-        self.predecessor_port = int(pred_port)
-        self.predecessor_id = pred_id
-
-        succ_id = self.hash_id(f"{succ_ip}:{succ_port}")
-        self.successor_ip = succ_ip
-        self.successor_port = int(succ_port)
-        self.successor_id = succ_id
-
-        self.keys_start = self.predecessor_id + 1 # self.keys_end has already been defined
-        self.data_store |= data_store # TODO: Maybe plain = instead of |=?
-
-        print(f"Successfully joined chord ring with pred {self.predecessor_id} and succ {self.successor_id}", flush=True)
-        print(f"Key range start: {self.keys_start}", flush=True)
-        print(f"Key range end: {self.keys_end}", flush=True)
-
-        return "Successfully updated pred and succ"
-
-    def update_pred_info(self, new_node_ip, new_node_port, departing=False, data_store={}):
+            if value is None:
+                value = {}
+            value = value | self.data_store[-1]
+            self.forward_request("query_star", {**_kwargs, "value":value})
+ 
+    def new_pred(self, new_node_ip, new_node_port):
         new_node_id = self.hash_id(f"{new_node_ip}:{new_node_port}")
+
+        ret_dict = {}
+        for key, value in self.data_store[0].items():
+            if self.lies_in_range(self.keys_start, new_node_id, self.hash_id(key)):
+                ret_dict[key] = value
+
+        new_data_store = [None for _ in range(self.replication_factor)]
+        new_data_store[0] = ret_dict
+        new_data_store[1:] = self.data_store[1:]
+
+        send_request(new_node_ip, new_node_port, "joinResponse", { 
+            "predecessor_ip": self.predecessor_ip,
+            "predecessor_port": self.predecessor_port,
+            "successor_ip": self.ip,
+            "successor_port": self.port,
+            "keys_start": self.keys_start,
+            "keys_end":   new_node_id,
+            "data_store": new_data_store})
+
+        # inform my old predecessor to update his successor to new_node_ip
+        send_request(self.predecessor_ip, self.predecessor_port, "update_succ_info", { 
+            "new_node_ip": new_node_ip,
+            "new_node_port": new_node_port})
+        
+        self.keys_start = new_node_id + 1
+
         self.predecessor_ip = new_node_ip
         self.predecessor_port = int(new_node_port)
         self.predecessor_id = new_node_id
 
-        old_start = self.keys_start
-        self.keys_start = new_node_id + 1
+        self.shift_replicas(0, self.keys_start, self.keys_end)
 
-        if departing:
-            # In this case, the node before us left, so we have to augment our data_store
-            self.data_store |= data_store
-            return {"status": "success"}
+    def join_response(self, predecessor_ip, predecessor_port, successor_ip, successor_port, keys_start, keys_end, data_store):
+        self.predecessor_ip   = predecessor_ip
+        self.predecessor_port = predecessor_port
+        self.predecessor_id   = self.hash_id(f"{self.predecessor_ip}:{self.predecessor_port}")
+        self.successor_ip     = successor_ip
+        self.successor_port   = successor_port
+        self.successor_id     = self.hash_id(f"{self.successor_ip}:{self.successor_port}")
+        self.keys_start       = keys_start
+        self.keys_end         = keys_end
+        self.data_store       = data_store
+
+
+    def shift_replicas(self, distance, exclude_start, exclude_end):
+        for i in range(distance+2, self.replication_factor):
+            self_data_store[i] = self_data_store[i-1] # distance increased
+        if distance+1 < self.replication_factor:
+            self.data_store[distance+1] =\
+                    {k:v for k,v in self.data_store[distance].items() if\
+                    not self.lies_in_range(exclude_start, exclude_end, self.hash_id(k))}
+        self.data_store[distance] =\
+                {k:v for k,v in self.data_store[distance].items() if\
+                self.lies_in_range(exclude_start, exclude_end, self.hash_id(k))}
+
+        if distance < self.replication_factor-1:
+           self.forward_request("shiftReplicas", {
+                "distance": distance+1,
+                "exclude_start": exclude_start,
+                "exclude_end":   exclude_end
+                })
+
+    @with_kwargs
+    def join_request(self, new_node_ip, new_node_port, _kwargs=None):
+        new_node_port = int(new_node_port)
+        new_node_id = self.hash_id(f"{new_node_ip}:{new_node_port}")
+
+        if self.is_responsible(new_node_id):
+            print(f"Trying to insert {new_node_id}")
+            self.new_pred(new_node_ip, new_node_port)
         else:
-            ret_dict = {}
-            for key, value in self.data_store.items():
-                if self.lies_in_range(old_start, self.keys_start - 1, self.hash_id(key)):
-                    ret_dict[key] = value
-            for key in list(ret_dict.keys()):
-                del self.data_store[key]
-            return {"status": "success", "data_store": ret_dict}
-
+            data = {"new_node_ip": new_node_ip, "new_node_port": new_node_port}
+            self.forward_request("join", _kwargs)
+            return "Forwarded join_request request"
+    
+    def join_existing(self, bootstrap_ip, bootstrap_port):
+        join_cmd = {"new_node_ip": self.ip, "new_node_port": self.port}
+        try:
+            send_request(bootstrap_ip, bootstrap_port, "join", join_cmd)
+        except Exception as e:
+            print("Error joining chord ring:", e, flush=True)
 
     def update_succ_info(self, new_node_ip, new_node_port):
         new_node_id = self.hash_id(f"{new_node_ip}:{new_node_port}")
@@ -289,97 +299,6 @@ class ChordNode:
         self.successor_id = new_node_id
 
         return "Successfully updated succ info"
-
-    def find_insert_position(self, new_node_ip, new_node_port):
-        new_node_port = int(new_node_port)
-        new_node_id = self.hash_id(f"{new_node_ip}:{new_node_port}")
-        print(f"Trying to insert {new_node_id}")
-        if (self.successor_id == self.node_id) or \
-        (self.node_id < new_node_id <= self.successor_id) or \
-        (self.node_id > self.successor_id and (new_node_id > self.node_id or new_node_id <= self.successor_id)):
-            response = f"{self.ip} {self.port} {self.successor_ip} {self.successor_port}"
-            resp = send_request(
-                self.successor_ip, self.successor_port,
-                "update_pred_info",
-                {"new_node_ip": new_node_ip, "new_node_port": new_node_port, "departing": False, "data_store": {}},
-                return_resp=True
-            )
-            if resp is not None and resp.get("status") == "success":
-                new_data_store = resp.get("data_store", {})
-            else:
-                new_data_store = {}
-            cmd_data = {
-                "pred_ip": self.ip,
-                "pred_port": self.port,
-                "succ_ip": self.successor_ip,
-                "succ_port": self.successor_port,
-                "data_store": new_data_store
-            }
-            self.successor_ip = new_node_ip
-            self.successor_port = new_node_port
-            self.successor_id = new_node_id
-            send_request(new_node_ip, new_node_port, "update_pred_and_succ", cmd_data)
-            return response
-        else:
-            data = {"new_node_ip": new_node_ip, "new_node_port": new_node_port}
-            send_request(self.successor_ip, self.successor_port, "find_insert_position", data)
-            return "Forwarded find_insert_position request"
-
-    def join_request(self, new_node_info):
-        try:
-            new_ip, new_port = new_node_info.split(':')
-            new_port = int(new_port)
-        except ValueError:
-            return "Error: Invalid join information format. Expected 'ip:port'."
-        new_node_id = self.hash_id(new_node_info)
-        print(f"Received join request from node {new_node_id} ({new_node_info})", flush=True)
-
-        if self.successor_id == self.node_id and self.predecessor_id == self.node_id:
-            response = f"JOIN_ACCEPTED {self.ip} {self.port} {self.ip} {self.port}"
-            self.predecessor_ip = self.successor_ip = new_ip
-            self.predecessor_port = self.successor_port = new_port
-            self.predecessor_id = self.successor_id = new_node_id
-
-            old_start = self.keys_start
-
-            self.keys_start = new_node_id + 1
-            print(response, flush=True)
-
-            ret_dict = {}
-            for key, value in self.data_store.items():
-                if self.lies_in_range(old_start, self.keys_start - 1, self.hash_id(key)):
-                    ret_dict[key] = value
-            
-            for key in ret_dict.keys():
-                del self.data_store[key]
-            send_request(
-                new_ip, new_port, "update_pred_and_succ",
-                {"pred_ip": self.ip, "pred_port": self.port, "succ_ip": self.ip, "succ_port": self.port, "data_store": ret_dict}
-            )
-            return response
-        else:
-            # insert_after_ip, insert_after_port, successor_ip, successor_port = self.find_insert_position(new_ip, new_port).split()
-
-            self.find_insert_position(new_ip, new_port)
-            # response = f"JOIN_ACCEPTED {insert_after_ip} {insert_after_port} {successor_ip} {successor_port}"
-            # print(response, flush=True)
-
-            # Also inform successor to update info
-            # cmd = f"update_pred_info {new_ip} {new_port}"
-            # print(f"Updating {successor_ip} {successor_port}")
-            # resp = send_request(successor_ip, int(successor_port), cmd)
-            # print(resp)
-
-            # TODO: ?
-            response = f"JOIN_ACCEPTED {self.ip} {self.port} {self.ip} {self.port}"
-            return response
-
-    def join_existing(self, bootstrap_ip, bootstrap_port):
-        try:
-            join_cmd = {"new_node_info": f"{self.ip}:{self.port}"}
-            send_request(bootstrap_ip, bootstrap_port, "join", join_cmd)
-        except Exception as e:
-            print("Error joining chord ring:", e, flush=True)
 
     def depart(self):
         # All we have to do here is inform our predecessor and successor
@@ -401,147 +320,115 @@ class ChordNode:
 
         return f"Node {self.node_id} is departing from the network."
 
-    def print_overlay(self):
-        print("Overlay (Chord Ring Topology):", flush=True)
-        print(f"Node {self.node_id} -> Successor: {self.successor_id} | Predecessor: {self.predecessor_id}", flush=True)
-        print(f"keys_start={self.keys_start}, keys_end={self.keys_end}", flush=True)
-
+    @with_kwargs
+    def overlay(self, initial_ip, initial_port, nodes=None, _kwargs=None):
+        if (nodes is not None and self.ip == initial_ip and self.port == initial_port):
+            print("Overlay (Chord Ring Topology):", flush=True)
+            for node in nodes:
+                print(f"Node {node['ip']}:{node['port']}")
+                print(f"  Predecessor {node['predecessor_ip']}:{node['predecessor_port']}")
+                print(f"  Successor {node['successor_ip']}:{node['successor_port']}")
+#            print(f"keys_start={self.keys_start}, keys_end={self.keys_end}", flush=True)
+        else:
+            node = {
+                    "ip": self.ip,
+                    "port": self.port,
+                    "predecessor_ip": self.predecessor_ip,
+                    "predecessor_port": self.predecessor_port,
+                    "successor_ip": self.successor_ip,
+                    "successor_port": self.successor_port
+                    }
+            if nodes is None:
+                nodes = [node]
+            else:
+                nodes.append(node)
+            self.forward_request("overlay", {**_kwargs, "nodes": nodes})
+ 
     def debug_print_keys(self):
         print("Printing Hash Table:", flush=True)
-        for key, value in self.data_store.items():
-            print(f"Key: {key}, Value: {value}, hash: {self.hash_id(key)}", flush=True)
+        for i, data_store_replica in enumerate(self.data_store):
+            for key, value in data_store_replica.items():
+                print(f"Key: {key}, Value: {value}, hash: {self.hash_id(key)} in data_store[{i}]", flush=True)
         print("Done printing Hash Table", flush=True)
 
 
-@app.route('/insert', methods=['POST'])
-def handle_insert():
+@app.route('/modify', methods=['POST'])
+def handle_modify():
     data = request.get_json()
-    initial_ip = data.get('initial_ip')
-    initial_port = data.get('initial_port')
-    key = data.get('key')
-    value = data.get('value')
-    response = chord_node.insert(initial_ip, initial_port, key, value)
+    response = chord_node.modify(**data)
     return jsonify({"response": response})
 
 @app.route('/query', methods=['POST'])
 def handle_query():
     data = request.get_json()
-    initial_ip = data.get('initial_ip')
-    initial_port = data.get('initial_port')
-    key = data.get('key')
-    response = chord_node.query(initial_ip, initial_port, key)
+    response = chord_node.query(**data)
     return jsonify({"response": response})
 
 @app.route('/query_star', methods=['POST'])
 def handle_query_star():
     data = request.get_json()
-    initial_ip = data.get('initial_ip')
-    initial_port = data.get('initial_port')
-    value = data.get('value', {})
-    response = chord_node.query_star(initial_ip, initial_port, value)
-    return jsonify({"response": response})
-
-@app.route('/delete', methods=['POST'])
-def handle_delete():
-    data = request.get_json()
-    initial_ip = data.get('initial_ip')
-    initial_port = data.get('initial_port')
-    key = data.get('key')
-    response = chord_node.delete(initial_ip, initial_port, key)
+    response = chord_node.query_star(**data)
     return jsonify({"response": response})
 
 @app.route('/join', methods=['POST'])
 def handle_join():
     data = request.get_json()
-    new_node_info = data.get('new_node_info')
-    response = chord_node.join_request(new_node_info)
+    response = chord_node.join_request(**data)
     return jsonify({"response": response})
 
-@app.route('/depart', methods=['POST'])
-def handle_depart():
-    response = chord_node.depart()
-    return jsonify({"response": response})
-
-@app.route('/find_insert_position', methods=['POST'])
-def handle_find_insert_position():
+@app.route('/joinResponse', methods=['POST'])
+def handle_join_response():
     data = request.get_json()
-    new_node_ip = data.get('new_node_ip')
-    new_node_port = data.get('new_node_port')
-    response = chord_node.find_insert_position(new_node_ip, new_node_port)
+    response = chord_node.join_response(**data)
     return jsonify({"response": response})
 
-@app.route('/update_pred_info', methods=['POST'])
-def handle_update_pred_info():
+@app.route('/shiftReplicas', methods=['POST'])
+def handle_shift_replicas():
     data = request.get_json()
-    new_node_ip = data.get('new_node_ip')
-    new_node_port = data.get('new_node_port')
-    departing = data.get('departing', False)
-    ds = data.get('data_store', {})
-    response = chord_node.update_pred_info(new_node_ip, new_node_port, departing, ds)
-    return jsonify(response)
+    response = chord_node.shift_replicas(**data)
+    return jsonify({"response": response})
 
+#@app.route('/depart', methods=['POST'])
+#def handle_depart():
+#    response = chord_node.depart()
+#    return jsonify({"response": response})
+#
 
 @app.route('/update_succ_info', methods=['POST'])
 def handle_update_succ_info():
     data = request.get_json()
-    new_node_ip = data.get('new_node_ip')
-    new_node_port = data.get('new_node_port')
-    response = chord_node.update_succ_info(new_node_ip, new_node_port)
+    response = chord_node.update_succ_info(**data)
     return jsonify({"response": response})
 
-@app.route('/update_pred_and_succ', methods=['POST'])
-def handle_update_pred_and_succ():
+@app.route('/modify_resp', methods=['POST'])
+def handle_modify_resp():
     data = request.get_json()
-    pred_ip = data.get('pred_ip')
-    pred_port = data.get('pred_port')
-    succ_ip = data.get('succ_ip')
-    succ_port = data.get('succ_port')
-    ds = data.get('data_store', {})
-    response = chord_node.update_pred_and_succ(pred_ip, pred_port, succ_ip, succ_port, ds)
-    return jsonify({"response": response})
-
-@app.route('/insert_resp', methods=['POST'])
-def handle_insert_resp():
-    print("Successful insertion")
-    return jsonify({"response": "Ok insert"})
+    print(data["response"])
+    return jsonify({"response": "Ok modify response"})
 
 @app.route('/query_resp', methods=['POST'])
 def handle_query_resp():
     data = request.get_json()
-    result = data.get('result')
-    print("Query result:", result)
+    print("Query result:", data["result"])
     return jsonify({"response": "Ok query"})
 
-@app.route('/query_star_resp', methods=['POST'])
-def handle_query_star_resp():
+@app.route('/replicateModify', methods=['POST'])
+def handle_replicate_modify():
     data = request.get_json()
-    result = data.get('result')
-    print("Query star result:", result)
-    return jsonify({"response": "Ok query_star"})
-
-@app.route('/delete_resp', methods=['POST'])
-def handle_delete_resp():
-    data = request.get_json()
-    status = data.get('status')
-    if status == "success":
-        print("Successful deletion")
-    else:
-        print("Key not found")
-    return jsonify({"response": "Ok delete"})
-
-@app.route('/replicateInsert', methods=['POST'])
-def handle_replicate_insert():
-    data = request.get_json()
-    response = chord_node.replicate_insert(**data)  # TODO remove before submission: this is VERY bad and HIGHLY INSECURE idea.
-                                                    # JSONschema could help and automate the checks. However, we will execute the whole project
-                                                    # in a trusted environment....... so we might as well leave it like this...........
-    return jsonify({"response": "Ok replicate insert"})
+    response = chord_node.replicate_modify(**data)
+    return jsonify({"response": "Ok replicate modify"})
 
 @app.route('/replicateQuery', methods=['POST'])
 def handle_replicate_query():
     data = request.get_json()
     response = chord_node.replicate_query(**data)
     return jsonify({"response": "Ok replicate query"})
+
+@app.route('/overlay', methods=['POST'])
+def handle_overlay():
+    data = request.get_json()
+    response = chord_node.overlay(**data)
+    return jsonify({"response": "Ok overlay"})
 
 def chord_cli(chord_node, ip, port):
     print("Chord DHT Client. Type 'help' for available commands.", flush=True)
@@ -557,14 +444,14 @@ def chord_cli(chord_node, ip, port):
                     print("Usage: insert <key> <value>", flush=True)
                     continue
                 key, value = args[1], args[2]
-                response = chord_node.insert(ip, port, key, value)
+                response = chord_node.modify(ip, port, "insert", key, value)
                 print(response, flush=True)
             elif cmd == "delete":
                 if len(args) < 2:
                     print("Usage: delete <key>", flush=True)
                     continue
                 key = args[1]
-                response = chord_node.delete(ip, port, key)
+                response = chord_node.modify(ip, port, "delete", key)
                 print(response, flush=True)
             elif cmd == "query":
                 if len(args) < 2:
@@ -572,7 +459,7 @@ def chord_cli(chord_node, ip, port):
                     continue
                 key = args[1]
                 if key == "*":
-                    response = chord_node.query_star(ip, port, {})
+                    response = chord_node.query_star(ip, port, None)
                 else:
                     response = chord_node.query(ip, port, key)
                 print(response, flush=True)
@@ -584,7 +471,7 @@ def chord_cli(chord_node, ip, port):
                 else:
                     print("Bootstrap node cannot depart", flush=True)
             elif cmd == "overlay":
-                chord_node.print_overlay()
+                chord_node.overlay(ip, port, None)
             elif cmd == "debug_print_keys":
                 chord_node.debug_print_keys()
             elif cmd == "help":
@@ -600,8 +487,8 @@ def chord_cli(chord_node, ip, port):
         except KeyboardInterrupt:
             print("\nExiting CLI.", flush=True)
             break
-        except Exception as e:
-            print("Error:", e, flush=True)
+#        except Exception as e:
+#            print("Error:", e, flush=True)
 
 def start_flask_app(ip, port):
     app.run(host=ip, port=port, threaded=True)
