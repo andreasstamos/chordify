@@ -28,8 +28,8 @@ def with_kwargs(func):
 
 app = Flask(__name__)
 
-def send_request(ip, port, endpoint, data, return_resp=False):
-    url = f"http://{ip}:{port}/{endpoint}"
+def send_request(url, endpoint, data, return_resp=False):
+    url = f"{url}/{endpoint}"
     try:
         response = requests.post(url, json=data)
         if return_resp:
@@ -41,16 +41,12 @@ def send_request(ip, port, endpoint, data, return_resp=False):
         return None
 
 class ChordNode:
-    def __init__(self, ip, port, replication_factor, consistency_model, is_bootstrap=False):
-        self.ip = ip
-        self.port = port # int(port)
-        self.node_id = self.hash_id(f"{ip}:{port}")
+    def __init__(self, url, replication_factor, consistency_model, is_bootstrap=False):
+        self.url = url
+        self.node_id = self.hash_id(url)
 
-        self.successor_ip = self.ip if is_bootstrap else None
-        self.successor_port = self.port if is_bootstrap else None
-
-        self.predecessor_ip = self.ip if is_bootstrap else None
-        self.predecessor_port = self.port if is_bootstrap else None
+        self.successor_url   = url if is_bootstrap else None
+        self.predecessor_url = url if is_bootstrap else None
 
         self.is_bootstrap = is_bootstrap
 
@@ -97,10 +93,10 @@ class ChordNode:
         
     def forward_request(self, endpoint, data):
         print(f"Forwarding {endpoint} request to the next node.")
-        return send_request(self.successor_ip, self.successor_port, endpoint, data)
+        return send_request(self.successor_url, endpoint, data)
 
     @with_kwargs
-    def replicate_modify(self, seq, uid, initial_ip, initial_port, operation, key, value, distance, _kwargs=None):
+    def replicate_modify(self, seq, uid, initial_url, operation, key, value, distance, _kwargs=None):
         # chain replication
         # This function is called for "insert" operations.
         # It applies the change, then forwards the request if necessary, then returns.
@@ -134,13 +130,13 @@ class ChordNode:
             self.forward_request("replicateModify", {**_kwargs, "seq": self.seq_to_succ, "distance": distance+1})
             self.seq_to_succ += 1
         else:
-            send_request(initial_ip, initial_port, "operation_resp", {"uid": uid, "response": "ok modify"}) #TODO: better message
+            send_request(initial_url, "operation_resp", {"uid": uid, "response": "ok modify"}) #TODO: better message
         
         self.replicate_wakeup()
 
 
     @with_kwargs
-    def replicate_query(self, seq, uid, initial_ip, initial_port, key, distance, _kwargs=None):
+    def replicate_query(self, seq, uid, initial_url, key, distance, _kwargs=None):
         if seq is not None:
             if seq != self.seq_from_prev:
                 #print("REORDERING", seq, self.seq_from_prev) TODO: remove
@@ -155,7 +151,7 @@ class ChordNode:
         else:
             res = self.data_store[-1].get(key, None)
             # Inform initial node of result
-            send_request(initial_ip, initial_port, "operation_resp", {"uid": uid, "response": res})
+            send_request(initial_url, "operation_resp", {"uid": uid, "response": res})
 
         self.replicate_wakeup()
 
@@ -179,34 +175,34 @@ class ChordNode:
     #TODO: Locks?
 
     @with_kwargs
-    def modify(self, uid, initial_ip, initial_port, operation, key, value, _kwargs=None):
+    def modify(self, uid, initial_url, operation, key, value, _kwargs=None):
         key_hash = self.hash_id(key)
         if self.is_responsible(key_hash):
-            self.replicate_modify(None, uid, initial_ip, initial_port, operation, key, value, 0)
+            self.replicate_modify(None, uid, initial_url, operation, key, value, 0)
         else:
             return self.forward_request("modify", _kwargs)
            
     @with_kwargs
-    def query(self, uid, initial_ip, initial_port, key, _kwargs=None):
+    def query(self, uid, initial_url, key, _kwargs=None):
         # We assume that key != "*" here
         if self.consistency_model == "EVENTUAL":
             for data_store_i in self.data_store[::-1]:
                 if key in data_store_i:
-                    return send_request(initial_ip, initial_port, "operation_resp", {"uid": uid, "response": data_store_i[key]})
-            if self.successor_ip == initial_ip and self.successor_port == initial_port:
-                return send_request(initial_ip, initial_port, "operation_resp", {"uid": uid, "response": None})
+                    return send_request(initial_url, "operation_resp", {"uid": uid, "response": data_store_i[key]})
+            if self.successor_url == initial_url:
+                return send_request(initial_url, "operation_resp", {"uid": uid, "response": None})
             self.forward_request("query", _kwargs)
         else:
             # LINEARIZABLE
             key_hash = self.hash_id(key)
             if self.is_responsible(key_hash):
-                self.replicate_query(None, uid, initial_ip, initial_port, key, 0)
+                self.replicate_query(None, uid, initial_url, key, 0)
             else:
                 return self.forward_request("query", _kwargs)
 
     @with_kwargs
-    def query_star(self, uid, initial_ip, initial_port, value=None, _kwargs=None):
-        if (value is not None and self.ip == initial_ip and self.port == initial_port):
+    def query_star(self, uid, initial_url, value=None, _kwargs=None):
+        if value is not None and self.url == initial_url:
             self.operation_resp(uid=uid, response=value)
         else:
             if value is None:
@@ -214,8 +210,8 @@ class ChordNode:
             value = value | self.data_store[-1]
             self.forward_request("query_star", {**_kwargs, "value":value})
  
-    def new_pred(self, new_node_ip, new_node_port):
-        new_node_id = self.hash_id(f"{new_node_ip}:{new_node_port}")
+    def new_pred(self, new_node_url):
+        new_node_id = self.hash_id(new_node_url)
 
         ret_dict = {}
         for key, value in self.data_store[0].items():
@@ -231,41 +227,35 @@ class ChordNode:
             # max distance backwards from new node is the current node.
             new_data_store.append({k:v for k,v in self.data_store[0].items() if k not in ret_dict})
 
-        send_request(new_node_ip, new_node_port, "joinResponse", { 
-            "predecessor_ip": self.predecessor_ip,
-            "predecessor_port": self.predecessor_port,
-            "successor_ip": self.ip,
-            "successor_port": self.port,
+        send_request(new_node_url, "joinResponse", { 
+            "predecessor_url": self.predecessor_url,
+            "successor_url": self.url,
             "keys_start": self.keys_start,
             "keys_end":   new_node_id,
             "replication_factor": self.replication_factor if self.replication_factor==self.max_replication_factor else self.replication_factor+1,
             "max_replication_factor": self.max_replication_factor,
             "data_store": new_data_store})
 
-        # inform my old predecessor to update his successor to new_node_ip
-        send_request(self.predecessor_ip, self.predecessor_port, "update_succ_info", { 
-            "new_node_ip": new_node_ip,
-            "new_node_port": new_node_port})
+        # inform my old predecessor to update his successor to new_node_url
+        send_request(self.predecessor_url, "update_succ_info", { 
+            "new_node_url": new_node_url})
         
         new_node_start = self.keys_start
 
         self.keys_start = new_node_id + 1
 
-        self.predecessor_ip = new_node_ip
-        self.predecessor_port = int(new_node_port)
+        self.predecessor_url = new_node_url
 
         if self.replication_factor < self.max_replication_factor:
-            self.inc_replication_factor(new_node_ip, new_node_port, 1, new_node_start, new_node_id)
+            self.inc_replication_factor(new_node_url, 1, new_node_start, new_node_id)
             # it should stop at the new node. we have already given him the correct data.
         else:
             self.shift_up_replicas(0, self.keys_start, self.keys_end)
 
-    def join_response(self, predecessor_ip, predecessor_port, successor_ip, successor_port, keys_start, keys_end,\
+    def join_response(self, predecessor_url, successor_url, keys_start, keys_end,\
             replication_factor, max_replication_factor, data_store):
-        self.predecessor_ip     = predecessor_ip
-        self.predecessor_port   = predecessor_port
-        self.successor_ip       = successor_ip
-        self.successor_port     = successor_port
+        self.predecessor_url    = predecessor_url
+        self.successor_url      = successor_url
         self.keys_start         = keys_start
         self.keys_end           = keys_end
         self.replication_factor = replication_factor
@@ -273,8 +263,8 @@ class ChordNode:
         self.data_store         = data_store
 
     @with_kwargs
-    def inc_replication_factor(self, initial_ip, initial_port, distance, new_node_start, new_node_end, _kwargs=None):
-        if initial_ip==self.ip and initial_port==self.port:
+    def inc_replication_factor(self, initial_url, distance, new_node_start, new_node_end, _kwargs=None):
+        if initial_url==self.url:
             return
         else:
             self.replication_factor += 1
@@ -308,60 +298,56 @@ class ChordNode:
                 })
 
     @with_kwargs
-    def join_request(self, new_node_ip, new_node_port, _kwargs=None):
-        new_node_port = int(new_node_port)
-        new_node_id = self.hash_id(f"{new_node_ip}:{new_node_port}")
+    def join_request(self, new_node_url, _kwargs=None):
+        new_node_id = self.hash_id(new_node_url)
 
         if self.is_responsible(new_node_id):
             print(f"Trying to insert {new_node_id}")
-            self.new_pred(new_node_ip, new_node_port)
+            self.new_pred(new_node_url)
         else:
-            data = {"new_node_ip": new_node_ip, "new_node_port": new_node_port}
+            data = {"new_node_url": new_node_url}
             self.forward_request("join", _kwargs)
             return "Forwarded join_request request"
     
-    def join_existing(self, bootstrap_ip, bootstrap_port):
-        join_cmd = {"new_node_ip": self.ip, "new_node_port": self.port}
+    def join_existing(self, bootstrap_url):
+        join_cmd = {"new_node_url": self.url}
         try:
-            send_request(bootstrap_ip, bootstrap_port, "join", join_cmd)
+            send_request(bootstrap_url, "join", join_cmd)
         except Exception as e:
             print("Error joining chord ring:", e, flush=True)
 
-    def update_succ_info(self, new_node_ip, new_node_port):
-        new_node_id = self.hash_id(f"{new_node_ip}:{new_node_port}")
-        self.successor_ip = new_node_ip
-        self.successor_port = int(new_node_port)
+    def update_succ_info(self, new_node_url):
+        new_node_id = self.hash_id(new_node_url)
+        self.successor_url = new_node_url
 
         return "Successfully updated succ info"
 
     def depart(self):
         print(f"Node {self.node_id} beginning to depart", flush=True)
 
-        send_request(self.predecessor_ip, self.predecessor_port, "update_succ_info",
-                {"new_node_ip": self.successor_ip, "new_node_port": self.successor_port}
+        send_request(self.predecessor_url, "update_succ_info",
+                {"new_node_url": self.successor_url}
         )
 
         self.forward_request("departPred", {
             "keys_start": self.keys_start,
-            "predecessor_ip": self.predecessor_ip,
-            "predecessor_port": self.predecessor_port,
+            "predecessor_url": self.predecessor_url,
             "maxdistance_replica": self.data_store[-1]
             })
 
         exiting = True
         return f"Node {self.node_id} is departing from the network."
 
-    def depart_pred(self, keys_start, predecessor_ip, predecessor_port, maxdistance_replica):
+    def depart_pred(self, keys_start, predecessor_url, maxdistance_replica):
         self.keys_start       = keys_start
-        self.predecessor_port = predecessor_port
-        self.predecessor_ip   = predecessor_ip
+        self.predecessor_url  = predecessor_url
 
         self.data_store[1] |= self.data_store[0]  # shift_down_replicas will then move this one unit of distance downwards
-        return self.shift_down_replicas(None, None, 0, maxdistance_replica)
+        return self.shift_down_replicas(None, 0, maxdistance_replica)
     
-    def shift_down_replicas(self, initial_ip, initial_port, distance, maxdistance_replica):
-        if initial_ip == self.ip and initial_port == self.port:
-            return self.dec_replication_factor(None, None)
+    def shift_down_replicas(self, initial_url, distance, maxdistance_replica):
+        if initial_url == self.url:
+            return self.dec_replication_factor(None)
 
         for i in range(distance, self.replication_factor-1):
             self.data_store[i] = self.data_store[i+1]
@@ -369,39 +355,33 @@ class ChordNode:
         self.data_store[-1] = maxdistance_replica
    
         if distance < self.replication_factor-1:
-            if initial_ip is None:
-                initial_ip = self.ip
-                initial_port = self.port
+            if initial_url is None:
+                initial_url = self.url
             self.forward_request("shiftDownReplicas", {
-                "initial_ip": initial_ip,
-                "initial_port": initial_port,
+                "initial_url": initial_url,
                 "distance": distance+1,
                 "maxdistance_replica": old_maxdistance_replica
                 })
 
-    def dec_replication_factor(self, initial_ip, initial_port):
-        if initial_ip==self.ip and initial_port==self.port:
+    def dec_replication_factor(self, initial_url):
+        if initial_url==self.url:
             return
         else:
             self.replication_factor -= 1
             self.data_store.pop()
-            if initial_ip is None:
-                initial_ip = self.ip
-                initial_port = self.port
-            self.forward_request("decReplicationFactor", {"initial_ip": initial_ip, "initial_port": initial_port})
+            if initial_url is None:
+                initial_url = self.url
+            self.forward_request("decReplicationFactor", {"initial_url": initial_url})
 
     @with_kwargs
-    def overlay(self, uid, initial_ip, initial_port, nodes=None, _kwargs=None):
-        if (nodes is not None and self.ip == initial_ip and self.port == initial_port):
+    def overlay(self, uid, initial_url, nodes=None, _kwargs=None):
+        if nodes is not None and self.url == initial_url:
             self.operation_resp(uid=uid, response=nodes)
         else:
             node = {
-                    "ip": self.ip,
-                    "port": self.port,
-                    "predecessor_ip": self.predecessor_ip,
-                    "predecessor_port": self.predecessor_port,
-                    "successor_ip": self.successor_ip,
-                    "successor_port": self.successor_port
+                    "url": self.url,
+                    "predecessor_url": self.predecessor_url,
+                    "successor_url": self.successor_url,
                     }
             if nodes is None:
                 nodes = [node]
@@ -420,7 +400,7 @@ class ChordNode:
         uid = uuid.uuid4().hex
         event = threading.Event()
         self.pending_requests[uid] = {"event": event}
-        func(uid, self.ip, self.port, *args, **kwargs)
+        func(uid, self.url, *args, **kwargs)
         event.wait()
         resp = self.pending_requests[uid]["response"]
         del self.pending_requests[uid]
@@ -527,7 +507,7 @@ def handle_dec_replication_factor():
     response = chord_node.dec_replication_factor(**data)
     return jsonify({"response": "Ok dec replication factor"})
 
-def chord_cli(chord_node, ip, port):
+def chord_cli(chord_node):
     print("Chord DHT Client. Type 'help' for available commands.", flush=True)
     while True:
         try:
@@ -548,7 +528,7 @@ def chord_cli(chord_node, ip, port):
                     print("Usage: delete <key>", flush=True)
                     continue
                 key = args[1]
-                response = chord_node.operation_driver(chord_node.delete, "delete", key, None)
+                response = chord_node.operation_driver(chord_node.modify, "delete", key, None)
                 print(response, flush=True)
             elif cmd == "query":
                 if len(args) < 2:
@@ -571,9 +551,9 @@ def chord_cli(chord_node, ip, port):
                 nodes = chord_node.operation_driver(chord_node.overlay, None)
                 print("Overlay (Chord Ring Topology):", flush=True)
                 for node in nodes:
-                    print(f"Node {node['ip']}:{node['port']}")
-                    print(f"  Predecessor {node['predecessor_ip']}:{node['predecessor_port']}")
-                    print(f"  Successor {node['successor_ip']}:{node['successor_port']}")
+                    print(f"Node {node['url']}")
+                    print(f"  Predecessor {node['url']}")
+                    print(f"  Successor {node['url']}")
 
             elif cmd == "debug_print_keys":
                 chord_node.debug_print_keys()
@@ -607,21 +587,24 @@ if __name__ == "__main__":
             sys.exit(1)
         bootstrap_ip = sys.argv[2]
         bootstrap_port = int(sys.argv[3])
+        bootstrap_url = f"http://{bootstrap_ip}:{bootstrap_port}"
         node_ip = sys.argv[4]
         node_port = int(sys.argv[5])
-        chord_node = ChordNode(node_ip, node_port, replication_factor=REPLICATION_FACTOR, consistency_model=CONSISTENCY_MODEL)
+        node_url = f"http://{node_ip}:{node_port}"
+        chord_node = ChordNode(node_url, replication_factor=REPLICATION_FACTOR, consistency_model=CONSISTENCY_MODEL)
         flask_thread = threading.Thread(target=start_flask_app, args=(node_ip, node_port))
         flask_thread.daemon = True
         flask_thread.start()
         # TODO: alternative?       
         time.sleep(1)
-        chord_node.join_existing(bootstrap_ip, bootstrap_port)
-        chord_cli(chord_node, node_ip, node_port)
+        chord_node.join_existing(bootstrap_url)
+        chord_cli(chord_node)
     else:
         bootstrap_ip = "127.0.0.1"
         bootstrap_port = 5000
-        chord_node = ChordNode(bootstrap_ip, bootstrap_port, replication_factor=REPLICATION_FACTOR, consistency_model=CONSISTENCY_MODEL, is_bootstrap=True)
+        bootstrap_url = f"http://{bootstrap_ip}:{bootstrap_port}"
+        chord_node = ChordNode(bootstrap_url, replication_factor=REPLICATION_FACTOR, consistency_model=CONSISTENCY_MODEL, is_bootstrap=True)
         flask_thread = threading.Thread(target=start_flask_app, args=(bootstrap_ip, bootstrap_port))
         flask_thread.daemon = True
         flask_thread.start()
-        chord_cli(chord_node, bootstrap_ip, bootstrap_port)
+        chord_cli(chord_node)
