@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, current_app
 import uuid
 import threading
 import hashlib
@@ -8,6 +8,10 @@ import requests
 import time
 import readline
 import inspect
+
+import dotenv
+dotenv.load_dotenv()
+import os
 
 # Question: What happens if two nodes hash to the same value?
 # For n nodes, the probability is ~ n^2/(2*2**160). (sha1 is 160 bits)
@@ -25,8 +29,6 @@ def with_kwargs(func):
         _kwargs.pop('self', None)
         return func(*args, **kwargs, _kwargs=_kwargs)
     return inner
-
-app = Flask(__name__)
 
 def send_request(url, endpoint, data, return_resp=False):
     url = f"{url}/{endpoint}"
@@ -413,101 +415,141 @@ class ChordNode:
         self.pending_requests[uid]["response"] = response
         self.pending_requests[uid]["event"].set()
 
+def init_app(app):
+    IS_BOOTSTRAP  = os.environ["IS_BOOTSTRAP"]
+    NODE_URL      = os.environ["NODE_URL"]
+    if IS_BOOTSTRAP=="TRUE":
+        CONSISTENCY_MODEL  = os.environ["CONSISTENCY_MODEL"]
+        REPLICATION_FACTOR = int(os.environ["REPLICATION_FACTOR"])
+        
+        chord_node = ChordNode(NODE_URL, consistency_model=CONSISTENCY_MODEL, replication_factor=REPLICATION_FACTOR, is_bootstrap=True)
+    else:
+        BOOTSTRAP_URL = os.environ["BOOTSTRAP_URL"]
+        chord_node = ChordNode(NODE_URL)
+
+    with app.app_context():
+        current_app.chord_node = chord_node
+        if IS_BOOTSTRAP!="TRUE": current_app.chord_node.join_existing(BOOTSTRAP_URL)
+
+app = Flask(__name__)
 
 @app.route('/modify', methods=['POST'])
 def handle_modify():
     data = request.get_json()
-    response = chord_node.modify(**data)
+    response = current_app.chord_node.modify(**data)
     return jsonify({"response": response})
 
 @app.route('/query', methods=['POST'])
 def handle_query():
     data = request.get_json()
-    response = chord_node.query(**data)
+    response = current_app.chord_node.query(**data)
     return jsonify({"response": response})
 
 @app.route('/query_star', methods=['POST'])
 def handle_query_star():
     data = request.get_json()
-    response = chord_node.query_star(**data)
+    response = current_app.chord_node.query_star(**data)
     return jsonify({"response": response})
 
 @app.route('/join', methods=['POST'])
 def handle_join():
     data = request.get_json()
-    response = chord_node.join_request(**data)
+    response = current_app.chord_node.join_request(**data)
     return jsonify({"response": response})
 
 @app.route('/joinResponse', methods=['POST'])
 def handle_join_response():
     data = request.get_json()
-    response = chord_node.join_response(**data)
+    response = current_app.chord_node.join_response(**data)
     return jsonify({"response": response})
 
 @app.route('/shiftUpReplicas', methods=['POST'])
 def handle_shift_up_replicas():
     data = request.get_json()
-    response = chord_node.shift_up_replicas(**data)
+    response = current_app.chord_node.shift_up_replicas(**data)
     return jsonify({"response": response})
 
 @app.route('/shiftDownReplicas', methods=['POST'])
 def handle_shift_down_replicas():
     data = request.get_json()
-    response = chord_node.shift_down_replicas(**data)
-    return jsonify({"response": response})
-
-@app.route('/depart', methods=['POST'])
-def handle_depart():
-    response = chord_node.depart()
+    response = current_app.chord_node.shift_down_replicas(**data)
     return jsonify({"response": response})
 
 @app.route('/departPred', methods=['POST'])
 def handle_depart_pred():
     data = request.get_json()
-    response = chord_node.depart_pred(**data)
+    response = current_app.chord_node.depart_pred(**data)
     return jsonify({"response": response})
 
 @app.route('/update_succ_info', methods=['POST'])
 def handle_update_succ_info():
     data = request.get_json()
-    response = chord_node.update_succ_info(**data)
+    response = current_app.chord_node.update_succ_info(**data)
     return jsonify({"response": response})
 
 @app.route('/operation_resp', methods=['POST'])
 def handle_operation_resp():
     data = request.get_json()
-    chord_node.operation_resp(**data)
+    current_app.chord_node.operation_resp(**data)
     return jsonify({"response": "Ok operation resp"})
 
 @app.route('/replicateModify', methods=['POST'])
 def handle_replicate_modify():
     data = request.get_json()
-    response = chord_node.replicate_modify(**data)
+    response = current_app.chord_node.replicate_modify(**data)
     return jsonify({"response": "Ok replicate modify"})
 
 @app.route('/replicateQuery', methods=['POST'])
 def handle_replicate_query():
     data = request.get_json()
-    response = chord_node.replicate_query(**data)
+    response = current_app.chord_node.replicate_query(**data)
     return jsonify({"response": "Ok replicate query"})
 
 @app.route('/overlay', methods=['POST'])
 def handle_overlay():
     data = request.get_json()
-    response = chord_node.overlay(**data)
+    response = current_app.chord_node.overlay(**data)
     return jsonify({"response": "Ok overlay"})
 
 @app.route('/incReplicationFactor', methods=['POST'])
 def handle_inc_replication_factor():
     data = request.get_json()
-    response = chord_node.inc_replication_factor(**data)
+    response = current_app.chord_node.inc_replication_factor(**data)
     return jsonify({"response": "Ok inc replication factor"})
 
 @app.route('/decReplicationFactor', methods=['POST'])
 def handle_dec_replication_factor():
     data = request.get_json()
-    response = chord_node.dec_replication_factor(**data)
+    response = current_app.chord_node.dec_replication_factor(**data)
     return jsonify({"response": "Ok dec replication factor"})
+
+@app.route('/api/depart', methods=['POST'])
+def handle_api_depart():
+    current_app.chord_node.depart()
+
+@app.route("/api/query", methods=['POST'])
+def handle_api_query():
+    data = request.get_json()
+    key = data["key"]
+    if key == "*":
+        response = current_app.chord_node.operation_driver(chord_node.query_star, None)
+    else:
+        response = current_app.chord_node.operation_driver(chord_node.query, key)
+    return {"response": response}
+
+@app.route("/api/modify", methods=['POST'])
+def handle_api_modify():
+    data = request.get_json()
+    key = data["key"]
+    operation = data["operation"]
+    match operation:
+        case "insert":
+            value = data["value"]
+        case "delete":
+            value = None
+    response = current_app.chord_node.operation_driver(chord_node.modify, opearation, key, value)
+    return {"response": response}
+ 
 
 def chord_cli(chord_node):
     print("Chord DHT Client. Type 'help' for available commands.", flush=True)
@@ -575,38 +617,18 @@ def chord_cli(chord_node):
 #        except Exception as e:
 #            print("Error:", e, flush=True)
 
-def start_flask_app(ip, port):
-    app.run(host=ip, port=port, threaded=True)
-
 if __name__ == "__main__":
-    #CONSISTENCY_MODEL = "LINEARIZABLE"
-    CONSISTENCY_MODEL = "EVENTUAL"
-    REPLICATION_FACTOR = 2
+    def start_flask_app():
+        url = os.environ["NODE_URL"][7:]
+        ip, port = url.split(":")
+        app.run(host=ip, port=port, threaded=True)
+    
+    flask_thread = threading.Thread(target=start_flask_app)
+    flask_thread.daemon = True
+    flask_thread.start()
+    # TODO: alternative?       
+    time.sleep(1)
+    init_app(app)
+    with app.app_context():
+        chord_cli(current_app.chord_node)
 
-    if len(sys.argv) > 1 and sys.argv[1] == 'join':
-        if len(sys.argv) != 6:
-            print("Usage: python chord.py join <bootstrap_ip> <bootstrap_port> <node_ip> <node_port>", flush=True)
-            sys.exit(1)
-        bootstrap_ip = sys.argv[2]
-        bootstrap_port = int(sys.argv[3])
-        bootstrap_url = f"http://{bootstrap_ip}:{bootstrap_port}"
-        node_ip = sys.argv[4]
-        node_port = int(sys.argv[5])
-        node_url = f"http://{node_ip}:{node_port}"
-        chord_node = ChordNode(node_url)
-        flask_thread = threading.Thread(target=start_flask_app, args=(node_ip, node_port))
-        flask_thread.daemon = True
-        flask_thread.start()
-        # TODO: alternative?       
-        time.sleep(1)
-        chord_node.join_existing(bootstrap_url)
-        chord_cli(chord_node)
-    else:
-        bootstrap_ip = "127.0.0.1"
-        bootstrap_port = 5000
-        bootstrap_url = f"http://{bootstrap_ip}:{bootstrap_port}"
-        chord_node = ChordNode(bootstrap_url, replication_factor=REPLICATION_FACTOR, consistency_model=CONSISTENCY_MODEL, is_bootstrap=True)
-        flask_thread = threading.Thread(target=start_flask_app, args=(bootstrap_ip, bootstrap_port))
-        flask_thread.daemon = True
-        flask_thread.start()
-        chord_cli(chord_node)
