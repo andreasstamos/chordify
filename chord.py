@@ -41,7 +41,7 @@ def send_request(url, endpoint, data, return_resp=False):
         return None
 
 class ChordNode:
-    def __init__(self, url, replication_factor, consistency_model, is_bootstrap=False):
+    def __init__(self, url, replication_factor=None, consistency_model=None, is_bootstrap=False):
         self.url = url
         self.node_id = self.hash_id(url)
 
@@ -57,7 +57,7 @@ class ChordNode:
         self.max_replication_factor = replication_factor if is_bootstrap else None
 
         self.data_store = [{}] if is_bootstrap else None
-        self.consistency_model = consistency_model
+        self.consistency_model = consistency_model if is_bootstrap else None
 
         # Replication Example: Let the node No.4 be responsible for a key k and let replication factor be 3.
         # Then replicas must exist at nodes No.5 and No.6. The chain for chain replication is 4->5->6.
@@ -234,6 +234,7 @@ class ChordNode:
             "keys_end":   new_node_id,
             "replication_factor": self.replication_factor if self.replication_factor==self.max_replication_factor else self.replication_factor+1,
             "max_replication_factor": self.max_replication_factor,
+            "consistency_model": self.consistency_model,
             "data_store": new_data_store})
 
         # inform my old predecessor to update his successor to new_node_url
@@ -253,13 +254,14 @@ class ChordNode:
             self.shift_up_replicas(0, self.keys_start, self.keys_end)
 
     def join_response(self, predecessor_url, successor_url, keys_start, keys_end,\
-            replication_factor, max_replication_factor, data_store):
+            replication_factor, max_replication_factor, consistency_model, data_store):
         self.predecessor_url    = predecessor_url
         self.successor_url      = successor_url
         self.keys_start         = keys_start
         self.keys_end           = keys_end
         self.replication_factor = replication_factor
         self.max_replication_factor = max_replication_factor
+        self.consistency_model = consistency_model
         self.data_store         = data_store
 
     @with_kwargs
@@ -591,7 +593,7 @@ if __name__ == "__main__":
         node_ip = sys.argv[4]
         node_port = int(sys.argv[5])
         node_url = f"http://{node_ip}:{node_port}"
-        chord_node = ChordNode(node_url, replication_factor=REPLICATION_FACTOR, consistency_model=CONSISTENCY_MODEL)
+        chord_node = ChordNode(node_url)
         flask_thread = threading.Thread(target=start_flask_app, args=(node_ip, node_port))
         flask_thread.daemon = True
         flask_thread.start()
