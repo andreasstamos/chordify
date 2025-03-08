@@ -97,7 +97,7 @@ class ChordNode:
         return send_request(self.successor_ip, self.successor_port, endpoint, data)
 
     @with_kwargs
-    def replicate_modify(self, seq, initial_ip, initial_port, operation, key, value, distance, _kwargs=None):
+    def replicate_modify(self, seq, uid, initial_ip, initial_port, operation, key, value, distance, _kwargs=None):
         # chain replication
         # This function is called for "insert" operations.
         # It applies the change, then forwards the request if necessary, then returns.
@@ -131,13 +131,13 @@ class ChordNode:
             self.forward_request("replicateModify", {**_kwargs, "seq": self.seq_to_succ, "distance": distance+1})
             self.seq_to_succ += 1
         else:
-            send_request(initial_ip, initial_port, "modify_resp", {"response": "ok modify"}) #TODO: better message
+            send_request(initial_ip, initial_port, "modify_resp", {"uid": uid, "response": "ok modify"}) #TODO: better message
         
         self.replicate_wakeup()
 
 
     @with_kwargs
-    def replicate_query(self, seq, initial_ip, initial_port, key, distance, _kwargs=None):
+    def replicate_query(self, seq, uid, initial_ip, initial_port, key, distance, _kwargs=None):
         if seq is not None:
             if seq != self.seq_from_prev:
                 #print("REORDERING", seq, self.seq_from_prev) TODO: remove
@@ -152,7 +152,7 @@ class ChordNode:
         else:
             res = self.data_store[-1].get(key, None)
             # Inform initial node of result
-            send_request(initial_ip, initial_port, "query_resp", {"result": res})
+            send_request(initial_ip, initial_port, "query_resp", {"uid": uid, "result": res})
 
         self.replicate_wakeup()
 
@@ -176,33 +176,33 @@ class ChordNode:
     #TODO: Locks?
 
     @with_kwargs
-    def modify(self, initial_ip, initial_port, operation, key, value, _kwargs=None):
+    def modify(self, uid, initial_ip, initial_port, operation, key, value, _kwargs=None):
         key_hash = self.hash_id(key)
         if self.is_responsible(key_hash):
-            self.replicate_modify(None, initial_ip, initial_port, operation, key, value, 0)
+            self.replicate_modify(None, uid, initial_ip, initial_port, operation, key, value, 0)
         else:
             return self.forward_request("modify", _kwargs)
            
     @with_kwargs
-    def query(self, initial_ip, initial_port, key, _kwargs=None):
+    def query(self, uid, initial_ip, initial_port, key, _kwargs=None):
         # We assume that key != "*" here
         if self.consistency_model == "EVENTUAL":
             for data_store_i in self.data_store[::-1]:
                 if key in data_store_i:
-                    return send_request(initial_ip, initial_port, "query_resp", {"result": data_store_i[key]})
+                    return send_request(initial_ip, initial_port, "query_resp", {"uid": uid, "result": data_store_i[key]})
             if self.successor_ip == initial_ip and self.successor_port == initial_port:
-                return send_request(initial_ip, initial_port, "query_resp", {"result": None})
+                return send_request(initial_ip, initial_port, "query_resp", {"uid": uid, "result": None})
             self.forward_request("query", _kwargs)
         else:
             # LINEARIZABLE
             key_hash = self.hash_id(key)
             if self.is_responsible(key_hash):
-                self.replicate_query(None, initial_ip, initial_port, key, 0)
+                self.replicate_query(None, uid, initial_ip, initial_port, key, 0)
             else:
                 return self.forward_request("query", _kwargs)
 
     @with_kwargs
-    def query_star(self, initial_ip, initial_port, value=None, _kwargs=None):
+    def query_star(self, uid, initial_ip, initial_port, value=None, _kwargs=None):
         if (value is not None and self.ip == initial_ip and self.port == initial_port):
             print("Query star result:", value)
         else:
@@ -534,14 +534,14 @@ def chord_cli(chord_node, ip, port):
                     print("Usage: insert <key> <value>", flush=True)
                     continue
                 key, value = args[1], args[2]
-                response = chord_node.modify(ip, port, "insert", key, value)
+                response = chord_node.modify(42, ip, port, "insert", key, value)
                 print(response, flush=True)
             elif cmd == "delete":
                 if len(args) < 2:
                     print("Usage: delete <key>", flush=True)
                     continue
                 key = args[1]
-                response = chord_node.modify(ip, port, "delete", key)
+                response = chord_node.modify(42, ip, port, "delete", key, None)
                 print(response, flush=True)
             elif cmd == "query":
                 if len(args) < 2:
@@ -549,9 +549,9 @@ def chord_cli(chord_node, ip, port):
                     continue
                 key = args[1]
                 if key == "*":
-                    response = chord_node.query_star(ip, port, None)
+                    response = chord_node.query_star(42, ip, port, None)
                 else:
-                    response = chord_node.query(ip, port, key)
+                    response = chord_node.query(42, ip, port, key)
                 print(response, flush=True)
             elif cmd == "depart":
                 if not chord_node.is_bootstrap:
