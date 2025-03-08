@@ -1,4 +1,5 @@
 from flask import Flask, request, jsonify
+import uuid
 import threading
 import hashlib
 import sys
@@ -78,6 +79,8 @@ class ChordNode:
         self.seq_from_prev = 0
         self.reorder_buffer_replication = dict()
 
+        self.pending_requests = dict()
+
 
     @staticmethod
     def hash_id(value):
@@ -131,7 +134,7 @@ class ChordNode:
             self.forward_request("replicateModify", {**_kwargs, "seq": self.seq_to_succ, "distance": distance+1})
             self.seq_to_succ += 1
         else:
-            send_request(initial_ip, initial_port, "modify_resp", {"uid": uid, "response": "ok modify"}) #TODO: better message
+            send_request(initial_ip, initial_port, "operation_resp", {"uid": uid, "response": "ok modify"}) #TODO: better message
         
         self.replicate_wakeup()
 
@@ -152,7 +155,7 @@ class ChordNode:
         else:
             res = self.data_store[-1].get(key, None)
             # Inform initial node of result
-            send_request(initial_ip, initial_port, "query_resp", {"uid": uid, "result": res})
+            send_request(initial_ip, initial_port, "operation_resp", {"uid": uid, "response": res})
 
         self.replicate_wakeup()
 
@@ -189,9 +192,9 @@ class ChordNode:
         if self.consistency_model == "EVENTUAL":
             for data_store_i in self.data_store[::-1]:
                 if key in data_store_i:
-                    return send_request(initial_ip, initial_port, "query_resp", {"uid": uid, "result": data_store_i[key]})
+                    return send_request(initial_ip, initial_port, "operation_resp", {"uid": uid, "response": data_store_i[key]})
             if self.successor_ip == initial_ip and self.successor_port == initial_port:
-                return send_request(initial_ip, initial_port, "query_resp", {"uid": uid, "result": None})
+                return send_request(initial_ip, initial_port, "operation_resp", {"uid": uid, "response": None})
             self.forward_request("query", _kwargs)
         else:
             # LINEARIZABLE
@@ -204,7 +207,7 @@ class ChordNode:
     @with_kwargs
     def query_star(self, uid, initial_ip, initial_port, value=None, _kwargs=None):
         if (value is not None and self.ip == initial_ip and self.port == initial_port):
-            print("Query star result:", value)
+            self.operation_resp(uid=uid, response=value)
         else:
             if value is None:
                 value = {}
@@ -388,14 +391,9 @@ class ChordNode:
             self.forward_request("decReplicationFactor", {"initial_ip": initial_ip, "initial_port": initial_port})
 
     @with_kwargs
-    def overlay(self, initial_ip, initial_port, nodes=None, _kwargs=None):
+    def overlay(self, uid, initial_ip, initial_port, nodes=None, _kwargs=None):
         if (nodes is not None and self.ip == initial_ip and self.port == initial_port):
-            print("Overlay (Chord Ring Topology):", flush=True)
-            for node in nodes:
-                print(f"Node {node['ip']}:{node['port']}")
-                print(f"  Predecessor {node['predecessor_ip']}:{node['predecessor_port']}")
-                print(f"  Successor {node['successor_ip']}:{node['successor_port']}")
-#            print(f"keys_start={self.keys_start}, keys_end={self.keys_end}", flush=True)
+            self.operation_resp(uid=uid, response=nodes)
         else:
             node = {
                     "ip": self.ip,
@@ -417,6 +415,21 @@ class ChordNode:
             for key, value in data_store_replica.items():
                 print(f"Key: {key}, Value: {value}, hash: {self.hash_id(key)} in data_store[{i}]", flush=True)
         print("Done printing Hash Table", flush=True)
+
+    def operation_driver(self, func, *args, **kwargs):
+        uid = uuid.uuid4().hex
+        event = threading.Event()
+        self.pending_requests[uid] = {"event": event}
+        func(uid, self.ip, self.port, *args, **kwargs)
+        event.wait()
+        resp = self.pending_requests[uid]["response"]
+        del self.pending_requests[uid]
+        return resp
+
+    def operation_resp(self, uid, response):
+        assert uid in self.pending_requests
+        self.pending_requests[uid]["response"] = response
+        self.pending_requests[uid]["event"].set()
 
 
 @app.route('/modify', methods=['POST'])
@@ -478,17 +491,11 @@ def handle_update_succ_info():
     response = chord_node.update_succ_info(**data)
     return jsonify({"response": response})
 
-@app.route('/modify_resp', methods=['POST'])
-def handle_modify_resp():
+@app.route('/operation_resp', methods=['POST'])
+def handle_operation_resp():
     data = request.get_json()
-    print(data["response"])
-    return jsonify({"response": "Ok modify response"})
-
-@app.route('/query_resp', methods=['POST'])
-def handle_query_resp():
-    data = request.get_json()
-    print("Query result:", data["result"])
-    return jsonify({"response": "Ok query"})
+    chord_node.operation_resp(**data)
+    return jsonify({"response": "Ok operation resp"})
 
 @app.route('/replicateModify', methods=['POST'])
 def handle_replicate_modify():
@@ -534,14 +541,14 @@ def chord_cli(chord_node, ip, port):
                     print("Usage: insert <key> <value>", flush=True)
                     continue
                 key, value = args[1], args[2]
-                response = chord_node.modify(42, ip, port, "insert", key, value)
+                response = chord_node.operation_driver(chord_node.modify, "insert", key, value)
                 print(response, flush=True)
             elif cmd == "delete":
                 if len(args) < 2:
                     print("Usage: delete <key>", flush=True)
                     continue
                 key = args[1]
-                response = chord_node.modify(42, ip, port, "delete", key, None)
+                response = chord_node.operation_driver(chord_node.delete, "delete", key, None)
                 print(response, flush=True)
             elif cmd == "query":
                 if len(args) < 2:
@@ -549,9 +556,9 @@ def chord_cli(chord_node, ip, port):
                     continue
                 key = args[1]
                 if key == "*":
-                    response = chord_node.query_star(42, ip, port, None)
+                    response = chord_node.operation_driver(chord_node.query_star, None)
                 else:
-                    response = chord_node.query(42, ip, port, key)
+                    response = chord_node.operation_driver(chord_node.query, key)
                 print(response, flush=True)
             elif cmd == "depart":
                 if not chord_node.is_bootstrap:
@@ -561,7 +568,13 @@ def chord_cli(chord_node, ip, port):
                 else:
                     print("Bootstrap node cannot depart", flush=True)
             elif cmd == "overlay":
-                chord_node.overlay(ip, port, None)
+                nodes = chord_node.operation_driver(chord_node.overlay, None)
+                print("Overlay (Chord Ring Topology):", flush=True)
+                for node in nodes:
+                    print(f"Node {node['ip']}:{node['port']}")
+                    print(f"  Predecessor {node['predecessor_ip']}:{node['predecessor_port']}")
+                    print(f"  Successor {node['successor_ip']}:{node['successor_port']}")
+
             elif cmd == "debug_print_keys":
                 chord_node.debug_print_keys()
             elif cmd == "help":
