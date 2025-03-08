@@ -150,7 +150,7 @@ class ChordNode:
             self.forward_request("replicateQuery", {**_kwargs, "seq": self.seq_to_succ, "distance": distance+1})
             self.seq_to_succ += 1
         else:
-            res = self.data_store[-1].get(key, "Key not found")
+            res = self.data_store[-1].get(key, None)
             # Inform initial node of result
             send_request(initial_ip, initial_port, "query_resp", {"result": res})
 
@@ -186,11 +186,20 @@ class ChordNode:
     @with_kwargs
     def query(self, initial_ip, initial_port, key, _kwargs=None):
         # We assume that key != "*" here
-        key_hash = self.hash_id(key)
-        if self.is_responsible(key_hash):
-            self.replicate_query(None, initial_ip, initial_port, key, 0)
+        if self.consistency_model == "EVENTUAL":
+            for data_store_i in self.data_store[::-1]:
+                if key in data_store_i:
+                    return send_request(initial_ip, initial_port, "query_resp", {"result": data_store_i[key]})
+            if self.successor_ip == initial_ip and self.successor_port == initial_port:
+                return send_request(initial_ip, initial_port, "query_resp", {"result": None})
+            self.forward_request("query", _kwargs)
         else:
-            return self.forward_request("query", _kwargs)
+            # LINEARIZABLE
+            key_hash = self.hash_id(key)
+            if self.is_responsible(key_hash):
+                self.replicate_query(None, initial_ip, initial_port, key, 0)
+            else:
+                return self.forward_request("query", _kwargs)
 
     @with_kwargs
     def query_star(self, initial_ip, initial_port, value=None, _kwargs=None):
@@ -575,7 +584,8 @@ def start_flask_app(ip, port):
     app.run(host=ip, port=port, threaded=True)
 
 if __name__ == "__main__":
-    CONSISTENCY_MODEL = "CHAIN_REPLICATION"
+    #CONSISTENCY_MODEL = "LINEARIZABLE"
+    CONSISTENCY_MODEL = "EVENTUAL"
     REPLICATION_FACTOR = 2
 
     if len(sys.argv) > 1 and sys.argv[1] == 'join':
