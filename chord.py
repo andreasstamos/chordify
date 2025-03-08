@@ -340,6 +340,8 @@ class ChordNode:
             })
 
         exiting = True
+        self.successor_url = None
+        self.predecessor_url = None
         return f"Node {self.node_id} is departing from the network."
 
     def depart_pred(self, keys_start, predecessor_url, maxdistance_replica):
@@ -525,16 +527,20 @@ def handle_dec_replication_factor():
 
 @app.route('/api/depart', methods=['POST'])
 def handle_api_depart():
-    current_app.chord_node.depart()
+    if not current_app.chord_node.is_bootstrap:
+        resp = current_app.chord_node.depart()
+        return {"response": resp}
+    else:
+        return {"response": "Bootstrap node cannot depart."}
 
 @app.route("/api/query", methods=['POST'])
 def handle_api_query():
     data = request.get_json()
     key = data["key"]
     if key == "*":
-        response = current_app.chord_node.operation_driver(chord_node.query_star, None)
+        response = current_app.chord_node.operation_driver(current_app.chord_node.query_star, None)
     else:
-        response = current_app.chord_node.operation_driver(chord_node.query, key)
+        response = current_app.chord_node.operation_driver(current_app.chord_node.query, key)
     return {"response": response}
 
 @app.route("/api/modify", methods=['POST'])
@@ -547,9 +553,14 @@ def handle_api_modify():
             value = data["value"]
         case "delete":
             value = None
-    response = current_app.chord_node.operation_driver(chord_node.modify, opearation, key, value)
+    response = current_app.chord_node.operation_driver(current_app.chord_node.modify, opearation, key, value)
     return {"response": response}
- 
+
+@app.route("/api/overlay", methods=['POST'])
+def handle_api_overlay():
+    response = current_app.chord_node.operation_driver(current_app.chord_node.overlay, None)
+    return {"response": response}
+
 
 def chord_cli(chord_node):
     print("Chord DHT Client. Type 'help' for available commands.", flush=True)
