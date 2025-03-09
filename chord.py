@@ -9,9 +9,8 @@ import time
 import readline
 import inspect
 
-import dotenv
-dotenv.load_dotenv()
 import os
+import signal
 
 # Question: What happens if two nodes hash to the same value?
 # For n nodes, the probability is ~ n^2/(2*2**160). (sha1 is 160 bits)
@@ -30,17 +29,21 @@ def with_kwargs(func):
         return func(*args, **kwargs, _kwargs=_kwargs)
     return inner
 
-def send_request(url, endpoint, data, return_resp=False):
-    url = f"{url}/{endpoint}"
-    try:
-        response = requests.post(url, json=data)
-        if return_resp:
-            return response.json()
-        else:
-            return response.text
-    except Exception as e:
-        print("Error sending request:", e)
-        return None
+def send_request(url, endpoint, data, nonblocking=True):
+    full_url = f"{url}/{endpoint}"
+
+    def do_request():
+        print("START")
+        requests.post(full_url, json=data)
+        print("EXIT")
+
+    if nonblocking:
+        thread = threading.Thread(target=do_request)
+        thread.daemon = True
+        thread.start()
+    else:
+        do_request()
+
 
 class ChordNode:
     def __init__(self, url, replication_factor=None, consistency_model=None, is_bootstrap=False):
@@ -78,6 +81,8 @@ class ChordNode:
         self.reorder_buffer_replication = dict()
 
         self.pending_requests = dict()
+
+        self.departed = False
 
 
     @staticmethod
@@ -237,11 +242,11 @@ class ChordNode:
             "replication_factor": self.replication_factor if self.replication_factor==self.max_replication_factor else self.replication_factor+1,
             "max_replication_factor": self.max_replication_factor,
             "consistency_model": self.consistency_model,
-            "data_store": new_data_store})
+            "data_store": new_data_store}, nonblocking=False)
 
         # inform my old predecessor to update his successor to new_node_url
         send_request(self.predecessor_url, "update_succ_info", { 
-            "new_node_url": new_node_url})
+            "new_node_url": new_node_url}, nonblocking=False)
         
         new_node_start = self.keys_start
 
@@ -285,7 +290,7 @@ class ChordNode:
 
     def shift_up_replicas(self, distance, exclude_start, exclude_end):
         for i in range(distance+2, self.replication_factor)[::-1]:
-            self_data_store[i] = self_data_store[i-1] # distance increased
+            self.data_store[i] = self_data_store[i-1] # distance increased
         if distance+1 < self.replication_factor:
             self.data_store[distance+1] =\
                     {k:v for k,v in self.data_store[distance].items() if\
@@ -327,11 +332,13 @@ class ChordNode:
         return "Successfully updated succ info"
 
     def depart(self):
+        if self.departed: return
+        self.departed = True
+
         print(f"Node {self.node_id} beginning to depart", flush=True)
 
         send_request(self.predecessor_url, "update_succ_info",
-                {"new_node_url": self.successor_url}
-        )
+                {"new_node_url": self.successor_url}, nonblocking=True)
 
         self.forward_request("departPred", {
             "keys_start": self.keys_start,
@@ -339,9 +346,12 @@ class ChordNode:
             "maxdistance_replica": self.data_store[-1]
             })
 
-        exiting = True
         self.successor_url = None
         self.predecessor_url = None
+        
+        my_pid = os.getppid()
+        os.kill(my_pid, signal.SIGTERM)
+
         return f"Node {self.node_id} is departing from the network."
 
     def depart_pred(self, keys_start, predecessor_url, maxdistance_replica):
@@ -388,6 +398,8 @@ class ChordNode:
                     "url": self.url,
                     "predecessor_url": self.predecessor_url,
                     "successor_url": self.successor_url,
+                    "keys_start": self.keys_start,
+                    "keys_end": self.keys_end,
                     }
             if nodes is None:
                 nodes = [node]
@@ -434,6 +446,11 @@ def init_app(app):
         if IS_BOOTSTRAP!="TRUE": current_app.chord_node.join_existing(BOOTSTRAP_URL)
 
 app = Flask(__name__)
+
+def cleanup_app(app):
+    with app.app_context():
+        if not current_app.chord_node.is_bootstrap:
+            current_app.chord_node.depart()
 
 @app.route('/modify', methods=['POST'])
 def handle_modify():
@@ -553,7 +570,7 @@ def handle_api_modify():
             value = data["value"]
         case "delete":
             value = None
-    response = current_app.chord_node.operation_driver(current_app.chord_node.modify, opearation, key, value)
+    response = current_app.chord_node.operation_driver(current_app.chord_node.modify, operation, key, value)
     return {"response": response}
 
 @app.route("/api/overlay", methods=['POST'])
@@ -607,8 +624,9 @@ def chord_cli(chord_node):
                 print("Overlay (Chord Ring Topology):", flush=True)
                 for node in nodes:
                     print(f"Node {node['url']}")
-                    print(f"  Predecessor {node['url']}")
-                    print(f"  Successor {node['url']}")
+                    print(f"  Predecessor {node['successor_url']}")
+                    print(f"  Successor {node['predecessor_url']}")
+                    print(f"  Key Range {node['keys_start']} -- {node['keys_end']}")
 
             elif cmd == "debug_print_keys":
                 chord_node.debug_print_keys()

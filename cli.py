@@ -1,4 +1,5 @@
 import requests
+import readline
 
 class CLI:
     def __init__(self, url):
@@ -6,6 +7,7 @@ class CLI:
 
     def send_request(self, endpoint, data):
         response = requests.post(f"{self.url}/api/{endpoint}", json=data)
+        print(response)
         return response.json()["response"]
     
     def modify(self, operation, key, value):
@@ -59,8 +61,11 @@ class CLI:
                     print("Overlay (Chord Ring Topology):", flush=True)
                     for node in nodes:
                         print(f"Node {node['url']}")
-                        print(f"  Predecessor {node['url']}")
-                        print(f"  Successor {node['url']}")
+                        print(f"  Predecessor {node['successor_url']}")
+                        print(f"  Successor {node['predecessor_url']}")
+                        print(f"  Key Range {node['keys_start']} -- {node['keys_end']}")
+                elif cmd == "exit":
+                    break
 
 #                elif cmd == "debug_print_keys":
 #                    chord_node.debug_print_keys()
