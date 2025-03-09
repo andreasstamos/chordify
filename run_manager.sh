@@ -1,3 +1,5 @@
+# for debugging, etc.
+
 export HAVE_BOOTSTRAP=TRUE
 export BOOTSTRAP_URL="http://127.0.0.1:5000/0"
 export BASE_URL="http://127.0.0.1:5000"

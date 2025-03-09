@@ -1,13 +1,24 @@
+#!/usr/bin/env python3
+import dotenv
+dotenv.load_dotenv("aws_conf")
+
 import requests
 import readline
 import sys
+import os
+import requests
+
 
 class CLI:
-    def __init__(self, url):
+    def __init__(self, url, username=None, password=None):
         self.url = url
+        if username is not None:
+            self.auth = requests.auth.HTTPBasicAuth(username, password)
+        else:
+            self.auth = None
 
     def send_request(self, endpoint, data):
-        response = requests.post(f"{self.url}/api/{endpoint}", json=data)
+        response = requests.post(f"{self.url}/api/{endpoint}", auth=self.auth, json=data)
         response = response.json()
         if "error" in response:
             print(f"Response Error: {response['error']}")
@@ -92,7 +103,6 @@ class CLI:
 
 if __name__ == "__main__":
     import os
-    NODE_URL = os.environ["NODE_URL"]
-    cli = CLI(url=NODE_URL)
+    cli = CLI(url=os.environ["BASE_URL"], username=os.environ["HTTP_USERNAME"], password=os.environ["HTTP_PASSWORD"])
     cli.run()
 
