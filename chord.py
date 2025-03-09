@@ -38,8 +38,7 @@ def send_request(url, endpoint, data, nonblocking=True):
         print("EXIT")
 
     if nonblocking:
-        thread = threading.Thread(target=do_request)
-        thread.daemon = True
+        thread = threading.Thread(target=do_request, daemon=False)
         thread.start()
     else:
         do_request()
@@ -253,6 +252,7 @@ class ChordNode:
         self.keys_start = new_node_id + 1
 
         self.predecessor_url = new_node_url
+        self.seq_from_prev = 0
 
         if self.replication_factor < self.max_replication_factor:
             self.inc_replication_factor(new_node_url, 1, new_node_start, new_node_id)
@@ -270,6 +270,9 @@ class ChordNode:
         self.max_replication_factor = max_replication_factor
         self.consistency_model = consistency_model
         self.data_store         = data_store
+
+        self.seq_to_succ   = 0
+        self.seq_from_prev = 0
 
     @with_kwargs
     def inc_replication_factor(self, initial_url, distance, new_node_start, new_node_end, _kwargs=None):
@@ -328,6 +331,7 @@ class ChordNode:
     def update_succ_info(self, new_node_url):
         new_node_id = self.hash_id(new_node_url)
         self.successor_url = new_node_url
+        self.seq_to_succ = 0
 
         return "Successfully updated succ info"
 
@@ -357,6 +361,8 @@ class ChordNode:
     def depart_pred(self, keys_start, predecessor_url, maxdistance_replica):
         self.keys_start       = keys_start
         self.predecessor_url  = predecessor_url
+
+        self.seq_from_prev = 0
 
         self.data_store[1] |= self.data_store[0]  # shift_down_replicas will then move this one unit of distance downwards
         return self.shift_down_replicas(None, 0, maxdistance_replica)
@@ -652,9 +658,7 @@ if __name__ == "__main__":
         ip, port = url.split(":")
         app.run(host=ip, port=port, threaded=True)
     
-    flask_thread = threading.Thread(target=start_flask_app)
-    flask_thread.daemon = True
-    flask_thread.start()
+    flask_thread = threading.Thread(target=start_flask_app, daemon=False)
     # TODO: alternative?       
     time.sleep(1)
     init_app(app)
