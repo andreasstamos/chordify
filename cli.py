@@ -1,5 +1,6 @@
 import requests
 import readline
+import sys
 
 class CLI:
     def __init__(self, url):
@@ -7,8 +8,12 @@ class CLI:
 
     def send_request(self, endpoint, data):
         response = requests.post(f"{self.url}/api/{endpoint}", json=data)
-        print(response)
-        return response.json()["response"]
+        response = response.json()
+        if "error" in response:
+            print(f"Response Error: {response['error']}")
+            print(f"Exiting CLI.")
+            sys.exit(1)
+        return response["response"]
     
     def modify(self, operation, key, value):
         return self.send_request("modify", {"operation": operation, "key": key, "value": value})

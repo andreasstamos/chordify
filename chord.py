@@ -33,9 +33,7 @@ def send_request(url, endpoint, data, nonblocking=True):
     full_url = f"{url}/{endpoint}"
 
     def do_request():
-        print("START")
         requests.post(full_url, json=data)
-        print("EXIT")
 
     if nonblocking:
         thread = threading.Thread(target=do_request, daemon=False)
@@ -353,8 +351,8 @@ class ChordNode:
         self.successor_url = None
         self.predecessor_url = None
         
-        my_pid = os.getppid()
-        os.kill(my_pid, signal.SIGTERM)
+        my_pid = os.getpid()
+        os.kill(my_pid, signal.SIGINT)
 
         return f"Node {self.node_id} is departing from the network."
 
