@@ -7,7 +7,6 @@ import urllib.parse
 import threading
 import atexit
 import signal
-import psutil
 
 from flask import Flask, request, Response
 import requests_unixsocket
