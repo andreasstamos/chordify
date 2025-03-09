@@ -7,6 +7,7 @@ import urllib.parse
 import threading
 import atexit
 import signal
+import psutil
 
 from flask import Flask, request, Response
 import requests_unixsocket
@@ -25,7 +26,7 @@ BOOTSTRAP_URL = os.environ["BOOTSTRAP_URL"]
 def monitor_worker(worker_id, proc):
     proc.wait()
     with workers_lock:
-        del workers[worker_id]
+        workers.pop(worker_id, None)
 
 @app.route("/management/spawn", methods=["POST"])
 def spawn_worker():
@@ -111,6 +112,23 @@ def spawn_bootstrap():
 @app.route("/management/list", methods=["POST"])
 def list_workers():
     return list(workers.keys())
+
+@app.route("/management/killall", methods=["POST"])
+def killall_workers():
+    global workers
+    for worker_id, worker in workers.items():
+        try:
+            parent = psutil.Process(worker["process"].pid)
+            parent.kill()
+            for child in parent.children(recursive=True):
+                child.kill()
+        except psutil.NoSuchProcess:
+            pass
+        if os.path.exists(worker["socket_path"]):
+            os.remove(worker["socket_path"])
+    workers = {}
+    next_id = 1
+    return {}
 
 @app.route('/<int:worker_id>/', defaults={'path': ''}, methods=["GET", "POST"])
 @app.route('/<int:worker_id>/<path:path>', methods=["GET", "POST"])
