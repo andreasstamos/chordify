@@ -1,0 +1,13 @@
+server {
+    server_name 10.0.35.162;
+
+    location / {
+        include proxy_params;
+        proxy_pass http://unix:/home/ubuntu/chordify/chordify.sock;
+    }
+
+    listen 5000;
+    listen [::]:5000;
+
+}
+

@@ -1,0 +1,88 @@
+server {
+    server_name chordify.ddnsfree.com;
+    
+    auth_basic           "Chordify";
+    auth_basic_user_file /etc/apache2/.htpasswd;
+
+    location /vm1 {
+        include proxy_params;
+        proxy_pass http://vm1/;
+    }
+
+    location /vm2 {
+        include proxy_params;
+        proxy_pass http://vm2/;
+    }
+
+    location /vm3 {
+        include proxy_params;
+        proxy_pass http://vm3/;
+    }
+
+    location /vm4 {
+        include proxy_params;
+        proxy_pass http://vm4/;
+    }
+
+    location /vm5 {
+        include proxy_params;
+        proxy_pass http://vm5/;
+    }
+
+    listen 443 ssl; # managed by Certbot
+    listen [::]:443 ssl ipv6only=on; # managed by Certbot
+    ssl_certificate /etc/letsencrypt/live/chordify.ddnsfree.com/fullchain.pem; # managed by Certbot
+    ssl_certificate_key /etc/letsencrypt/live/chordify.ddnsfree.com/privkey.pem; # managed by Certbot
+    include /etc/letsencrypt/options-ssl-nginx.conf; # managed by Certbot
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem; # managed by Certbot
+
+}
+
+server {
+    if ($host = chordify.ddnsfree.com) {
+        return 301 https://$host$request_uri;
+    } # managed by Certbot
+
+
+    listen 80;
+    listen [::]:80;
+
+    server_name chordify.ddnsfree.com;
+    return 404; # managed by Certbot
+
+
+}
+
+server {
+    server_name 10.0.35.58;
+    
+    location / {
+        include proxy_params;
+        proxy_pass http://vm1/;
+    }
+
+    listen 5000;
+    listen [::]:5000;
+
+}
+
+upstream vm1 {
+    server unix:/home/ubuntu/chordify/chordify.sock;
+}
+
+upstream vm2 {
+    server 10.0.35.162:5000;
+}
+
+upstream vm3 {
+    server 10.0.35.23:5000;
+}
+
+upstream vm4 {
+    server 10.0.35.252:5000;
+}
+
+upstream vm5 {
+    server 10.0.35.111:5000;
+}
+
