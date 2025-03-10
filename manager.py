@@ -7,9 +7,11 @@ import urllib.parse
 import threading
 import atexit
 import signal
+import psutil
 
 from flask import Flask, request, Response
 import requests_unixsocket
+import requests
 
 app = Flask(__name__)
 
@@ -27,9 +29,20 @@ def monitor_worker(worker_id, proc):
     with workers_lock:
         workers.pop(worker_id, None)
 
+def is_bootstrap_alive():
+    resp = requests.post(f"{BOOTSTRAP_URL}/healthcheck", json={})
+    if resp.status_code == 404:
+        return True
+    else:
+        return False
+
 @app.route("/management/spawn", methods=["POST"])
 def spawn_worker():
     global next_id
+
+    if not is_bootstrap_alive():
+        return {"error": "Bootstrap Node is not running."}
+
     worker_id = next_id
     next_id += 1
 

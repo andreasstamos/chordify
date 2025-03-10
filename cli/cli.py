@@ -1,11 +1,23 @@
 #!/usr/bin/env python3
-import requests
 import readline
 import sys
 import os
 import requests
 
-class CLI:
+COMMANDS = [
+    "insert", "delete", "query", "depart", "overlay",
+    "exit", "list-physicals", "set-physical", "list-logicals", "set-logical",
+    "show-selected", "spawn", "spawn-bootstrap", "killall", "help"
+]
+
+def autocompleter(text, state):
+    options = [cmd for cmd in COMMANDS if cmd.startswith(text)]
+    if state < len(options):
+        return options[state]
+    else:
+        return None
+
+class Client:
     def __init__(self, physical_urls, username=None, password=None):
         self.physical_urls = physical_urls
         self.physical = None
@@ -69,8 +81,8 @@ class CLI:
 
     def overlay(self):
         return self.send_request("overlay")
-    
-    def run(self):
+
+    def cli(self):
         print("Chord DHT Client. Type 'help' for available commands.", flush=True)
         while True:
             try:
@@ -217,9 +229,15 @@ class CLI:
 
 if __name__ == "__main__":
     import configuration
-    cli = CLI(
+    client = Client(
             physical_urls=configuration.physical_urls,
             username=configuration.http_username,
             password=configuration.http_password)
-    cli.run()
+
+    readline.set_completer(autocompleter)
+    delims = readline.get_completer_delims()
+    readline.set_completer_delims(delims.replace('-', ''))
+    readline.parse_and_bind("tab: complete")
+
+    client.cli()
 
