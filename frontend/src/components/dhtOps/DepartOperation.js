@@ -28,9 +28,13 @@ function DepartOperation({ onDepart }) {
   const handleDepart = async () => {
     try {
       const resp = await onDepart();
-      setResult(resp);
-      setShowResult(true);
-      showSnackbar('Departed successfully!', 'success');
+      if (resp.error) {
+        showSnackbar(`Depart error: ${resp.error}`, 'error');
+      } else {
+        setResult(resp);
+        setShowResult(true);
+        showSnackbar('Departed successfully!', 'success');
+      }
     } catch (error) {
       showSnackbar(`Depart error: ${error.message}`, 'error');
     }

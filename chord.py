@@ -552,7 +552,7 @@ def handle_api_depart():
         resp = current_app.chord_node.depart()
         return {"response": resp}
     else:
-        return {"response": "Bootstrap node cannot depart."}
+        return {"error": "Bootstrap node cannot depart."}
 
 @app.route("/api/query", methods=['POST'])
 def handle_api_query():
