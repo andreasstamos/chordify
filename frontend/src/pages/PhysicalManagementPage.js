@@ -53,10 +53,14 @@ function PhysicalManagementPage() {
     try {
       setLoading(true);
       const resp = await managerRequest(managerBaseURL, 'spawn');
-      setSpawnResult(JSON.stringify(resp));
-      showAlert('Spawned a new Logical Worker!', 'success');
-
-      setSelectedWorkerId(null);
+      if (resp.error) {
+        setSpawnResult(JSON.stringify(resp));
+        showAlert(`Spawn error: ${resp.error}`, 'error');
+      } else {
+        setSpawnResult(JSON.stringify(resp));
+        showAlert('Spawned a new Logical Worker!', 'success');
+        setSelectedWorkerId(null);
+      }
     } catch (error) {
       showAlert(error.message, 'error');
     } finally {
@@ -77,19 +81,19 @@ function PhysicalManagementPage() {
       });
       if (resp.error) {
         setBootstrapResult(`Error: ${resp.error}`);
-        showAlert(`Error: ${resp.error}`, 'error');
+        showAlert(`Spawn bootstrap error: ${resp.error}`, 'error');
       } else {
         setBootstrapResult(JSON.stringify(resp));
         showAlert('Spawned the Bootstrap Node!', 'success');
+        setSelectedWorkerId(null);
       }
-
-      setSelectedWorkerId(null);
     } catch (error) {
       showAlert(error.message, 'error');
     } finally {
       setLoading(false);
     }
   };
+
 
   const handleKillAll = async () => {
     if (!managerBaseURL) {
