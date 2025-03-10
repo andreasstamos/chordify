@@ -128,7 +128,7 @@ class ChordNode:
                 else:
                     self.data_store[distance][key] = value
             case "delete":
-                del self.data_store[distance][key]
+                self.data_store[distance].pop(key, None)
 
         if distance < self.replication_factor-1:
             self.forward_request("replicateModify", {**_kwargs, "seq": self.seq_to_succ, "distance": distance+1})
@@ -402,8 +402,8 @@ class ChordNode:
                     "url": self.url,
                     "predecessor_url": self.predecessor_url,
                     "successor_url": self.successor_url,
-                    "keys_start": self.keys_start,
-                    "keys_end": self.keys_end,
+                    "keys_start": str(self.keys_start),
+                    "keys_end": str(self.keys_end),
                     }
             if nodes is None:
                 nodes = [node]
