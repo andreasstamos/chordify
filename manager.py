@@ -13,6 +13,8 @@ from flask import Flask, request, Response
 import requests_unixsocket
 import requests
 
+import schemas
+
 app = Flask(__name__)
 
 workers = {}
@@ -37,6 +39,7 @@ def is_bootstrap_alive():
         return False
 
 @app.route("/management/spawn", methods=["POST"])
+@schemas.validate_json(schemas.SPAWN_SCHEMA)
 def spawn_worker():
     global next_id
 
@@ -80,6 +83,7 @@ def spawn_worker():
 
 
 @app.route("/management/spawnBootstrap", methods=["POST"])
+@schemas.validate_json(schemas.SPAWN_BOOTSTRAP_SCHEMA)
 def spawn_bootstrap():
     data = request.get_json()
 
@@ -122,10 +126,12 @@ def spawn_bootstrap():
     return {"id": 0}
 
 @app.route("/management/list", methods=["POST"])
+@schemas.validate_json(schemas.LIST_WORKERS_SCHEMA)
 def list_workers():
     return list(workers.keys())
 
 @app.route("/management/killall", methods=["POST"])
+@schemas.validate_json(schemas.KILLALL_SCHEMA)
 def killall_workers():
     global workers, next_id
     for worker_id, worker in workers.items():

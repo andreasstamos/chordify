@@ -169,7 +169,11 @@ function PhysicalManagementPage() {
             label="Replication Factor"
             type="number"
             value={repFactor}
-            onChange={(e) => setRepFactor(parseInt(e.target.value, 10))}
+            onChange={(e) => {
+              const val = parseInt(e.target.value, 10);
+              setRepFactor(val < 1 ? 1 : val);
+            }}
+            inputProps={{ min: 1 }}
             sx={{ display: 'block', maxWidth: 300, mb: 2 }}
           />
           <Button

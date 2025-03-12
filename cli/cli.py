@@ -68,8 +68,8 @@ class Client:
         return self.send_request("killall", manager=True)
   
 
-    def modify(self, operation, key, value):
-        return self.send_request("modify", {"operation": operation, "key": key, "value": value})
+    def modify(self, operation, key, value=None):
+        return self.send_request("modify", {"operation": operation, "key": key, **({"value":value} if value is not None else {})})
 
     def query(self, key):
         return self.send_request("query", {"key": key})
@@ -110,7 +110,7 @@ class Client:
                         print("Usage: delete <key>", flush=True)
                         continue
                     key = args[1]
-                    response = self.modify("delete", key, None)
+                    response = self.modify("delete", key)
                     print(response, flush=True)
                 elif cmd == "query":
                     if len(args) < 2:
@@ -190,7 +190,7 @@ class Client:
                     if self.physical is None:
                         print("Please set a physical node.", flush=True)
                         continue
-                    resp = self.spawn_bootstrap(consistency_model=args[1], replication_factor=args[2])
+                    resp = self.spawn_bootstrap(consistency_model=args[1], replication_factor=int(args[2]))
                     print(resp, flush=True)
                 elif cmd == "killall":
                     if self.physical is None:

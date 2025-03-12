@@ -1,3 +1,4 @@
+import functools
 from flask import Flask, request, jsonify, current_app
 import uuid
 import threading
@@ -12,6 +13,8 @@ import inspect
 import os
 import signal
 
+import schemas
+
 # Question: What happens if two nodes hash to the same value?
 # For n nodes, the probability is ~ n^2/(2*2**160). (sha1 is 160 bits)
 # For 1000 nodes this is 3e-43. we can accept this.
@@ -20,6 +23,7 @@ import signal
 
 def with_kwargs(func):
     sig = inspect.signature(func)
+    @functools.wraps(func)
     def inner(*args, **kwargs):
         bound = sig.bind(*args, **kwargs)
         bound.apply_defaults()
@@ -570,6 +574,7 @@ def handle_dec_replication_factor():
     return jsonify({"response": "Ok dec replication factor"})
 
 @app.route('/api/depart', methods=['POST'])
+@schemas.validate_json(schemas.API_DEPART_SCHEMA)
 def handle_api_depart():
     if not current_app.chord_node.is_bootstrap:
         resp = current_app.chord_node.depart()
@@ -578,6 +583,7 @@ def handle_api_depart():
         return {"error": "Bootstrap node cannot depart."}
 
 @app.route("/api/query", methods=['POST'])
+@schemas.validate_json(schemas.API_QUERY_SCHEMA)
 def handle_api_query():
     data = request.get_json()
     key = data["key"]
@@ -588,6 +594,7 @@ def handle_api_query():
     return {"response": response}
 
 @app.route("/api/modify", methods=['POST'])
+@schemas.validate_json(schemas.API_MODIFY_SCHEMA)
 def handle_api_modify():
     data = request.get_json()
     key = data["key"]
@@ -601,6 +608,7 @@ def handle_api_modify():
     return {"response": response}
 
 @app.route("/api/overlay", methods=['POST'])
+@schemas.validate_json(schemas.API_OVERLAY_SCHEMA)
 def handle_api_overlay():
     response = current_app.chord_node.operation_driver(current_app.chord_node.overlay, None)
     return {"response": response}
