@@ -127,7 +127,7 @@ def list_workers():
 
 @app.route("/management/killall", methods=["POST"])
 def killall_workers():
-    global workers
+    global workers, next_id
     for worker_id, worker in workers.items():
         try:
             parent = psutil.Process(worker["process"].pid)
