@@ -172,9 +172,9 @@ class ChordNode:
             del self.reorder_buffer_replication[seq_wakeup]
             match op:
                 case "modify":
-                    self.replicate_modify(seq_wakeup, **kwargs)
+                    self.replicate_modify(**kwargs)
                 case "query":
-                    self.replicate_query(seq_wakeup, **kwargs)
+                    self.replicate_query(**kwargs)
 
     #TODO: Locks?
 

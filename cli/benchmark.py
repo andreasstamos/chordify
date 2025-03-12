@@ -31,12 +31,15 @@ def benchmark_driver(client, consistency_model, replication_factor):
     client.spawn_bootstrap(consistency_model, replication_factor)
     time.sleep(1)
     client.spawn()
+    time.sleep(1)
 
     for physical in client.physical_urls:
         if physical == "vm1": continue
         client.physical = physical
         client.spawn()
+        time.sleep(1)
         client.spawn()
+        time.sleep(1)
 
     times = [None for _ in range(10)]
     def node_driver(node_index):
@@ -62,12 +65,15 @@ def benchmark_driver(client, consistency_model, replication_factor):
         times[node_index] = t_end-t_start
 
     print("Start benchmarking...")
-    threads = [threading.Thread(target=node_driver, args=(node_index,), daemon=False) for node_index in range(4)]
+    threads = [threading.Thread(target=node_driver, args=(node_index,), daemon=False) for node_index in range(10)]
     for thread in threads:
         thread.start()
     for thread in threads:
         thread.join()
     print("Benchmarking done.")
+
+    print(times)
+    return
 
     print("Cleaning up...")
     for physical in client.physical_urls:
