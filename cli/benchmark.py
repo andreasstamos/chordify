@@ -18,11 +18,10 @@ for i in range(10):
         REQUESTS[i] = [line.strip().split(maxsplit=1) for line in f.readlines()]
 
 
-def benchmark_driver(client, consistency_model, replication_factor):
-    # setup
-    
+def benchmark_driver(client_factory, consistency_model, replication_factor):
     print("Setting up...")
 
+    client = client_factory()
     for physical in client.physical_urls:
         client.physical = physical
         client.killall()
@@ -43,7 +42,7 @@ def benchmark_driver(client, consistency_model, replication_factor):
 
     times = [None for _ in range(10)]
     def node_driver(node_index):
-        nonlocal client, times
+        nonlocal times
 
         physical_idx = 1 + node_index // 2
         logical_idx  = 1 + node_index  % 2
@@ -51,7 +50,7 @@ def benchmark_driver(client, consistency_model, replication_factor):
         if physical_idx == 1:
             logical_idx -= 1 # use bootstrap
 
-        client = copy.deepcopy(client)
+        client = client_factory()
         client.physical = f"vm{physical_idx}"
         client.logical = str(logical_idx)
         
@@ -82,9 +81,9 @@ def benchmark_driver(client, consistency_model, replication_factor):
 
 if __name__ == "__main__":
     import configuration
-    client = cli.Client(
+    client_factory = lambda: cli.Client(
             physical_urls=configuration.physical_urls,
             username=configuration.http_username,
             password=configuration.http_password)
-    benchmark_driver(client, "LINEARIZABLE", 2)
+    benchmark_driver(client_factory, "LINEARIZABLE", 1)
 

@@ -76,6 +76,7 @@ class ChordNode:
         self.seq_to_succ = 0
         self.seq_from_prev = 0
         self.reorder_buffer_replication = dict()
+        self.replicate_wakeup_lock = threading.Lock()
 
         self.pending_requests = dict()
 
@@ -114,13 +115,14 @@ class ChordNode:
         # Seq=None is given by the initial caller (call that doesnt come from the network)
 
         if seq is not None:
-            if seq != self.seq_from_prev:
-                #print("REORDERING", seq, self.seq_from_prev) #TODO: remove
-                self.reorder_buffer_replication[seq] = ("modify", _kwargs)
-                return
-            else:
-                self.seq_from_prev += 1
-       
+            with self.replicate_wakeup_lock:
+                if seq != self.seq_from_prev:
+                    #print("REORDERING", seq, self.seq_from_prev) #TODO: remove
+                    self.reorder_buffer_replication[seq] = ("modify", _kwargs)
+                    return
+                else:
+                    self.seq_from_prev += 1
+
         match operation:
             case "insert":
                 if key in self.data_store[distance]:
@@ -142,13 +144,14 @@ class ChordNode:
     @with_kwargs
     def replicate_query(self, seq, uid, initial_url, key, distance, _kwargs=None):
         if seq is not None:
-            if seq != self.seq_from_prev:
-                #print("REORDERING", seq, self.seq_from_prev) TODO: remove
-                self.reorder_buffer_replication[seq] = ("query", _kwargs)
-                return
-            else:
-                self.seq_from_prev += 1
-        
+            with self.replicate_wakeup_lock:
+                if seq != self.seq_from_prev:
+                    #print("REORDERING", seq, self.seq_from_prev) TODO: remove
+                    self.reorder_buffer_replication[seq] = ("query", _kwargs)
+                    return
+                else:
+                    self.seq_from_prev += 1
+
         if distance < self.replication_factor-1:
             self.forward_request("replicateQuery", {**_kwargs, "seq": self.seq_to_succ, "distance": distance+1})
             self.seq_to_succ += 1
@@ -166,10 +169,14 @@ class ChordNode:
         # IF however it happens to appear and the app blows up it might be worse than an inconsistency which might go unnoticed.
         # (highly the opposite of what would apply to a real system!)
         # on the other hand, we can present it as BONUS feature...........
-        if min(self.reorder_buffer_replication.keys(), default=None) == self.seq_from_prev:
-            seq_wakeup = min(self.reorder_buffer_replication.keys())
-            (op, kwargs) = self.reorder_buffer_replication[seq_wakeup]
-            del self.reorder_buffer_replication[seq_wakeup]
+        seq_wakeup = None
+        with self.replicate_wakeup_lock:
+            if min(self.reorder_buffer_replication.keys(), default=None) == self.seq_from_prev:
+                seq_wakeup = min(self.reorder_buffer_replication.keys())
+                (op, kwargs) = self.reorder_buffer_replication[seq_wakeup]
+                del self.reorder_buffer_replication[seq_wakeup]
+
+        if seq_wakeup is not None:
             match op:
                 case "modify":
                     self.replicate_modify(**kwargs)
