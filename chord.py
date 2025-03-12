@@ -305,7 +305,7 @@ class ChordNode:
 
     def shift_up_replicas(self, distance, exclude_start, exclude_end):
         for i in range(distance+2, self.replication_factor)[::-1]:
-            self.data_store[i] = self_data_store[i-1] # distance increased
+            self.data_store[i] = self.data_store[i-1] # distance increased
         if distance+1 < self.replication_factor:
             self.data_store[distance+1] =\
                     {k:v for k,v in self.data_store[distance].items() if\
