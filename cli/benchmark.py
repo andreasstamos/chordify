@@ -30,17 +30,16 @@ def benchmark_driver(client_factory, consistency_model, replication_factor):
     client.spawn_bootstrap(consistency_model, replication_factor)
     time.sleep(1)
     client.spawn()
-    time.sleep(1)
 
     for physical in client.physical_urls:
         if physical == "vm1": continue
         client.physical = physical
         client.spawn()
-        time.sleep(1)
         client.spawn()
-        time.sleep(1)
+    time.sleep(1)
 
     times = [None for _ in range(10)]
+
     def node_driver(node_index):
         nonlocal times
 
@@ -72,7 +71,6 @@ def benchmark_driver(client_factory, consistency_model, replication_factor):
     print("Benchmarking done.")
 
     print(times)
-    return
 
     print("Cleaning up...")
     for physical in client.physical_urls:
@@ -85,5 +83,5 @@ if __name__ == "__main__":
             physical_urls=configuration.physical_urls,
             username=configuration.http_username,
             password=configuration.http_password)
-    benchmark_driver(client_factory, "LINEARIZABLE", 1)
+    benchmark_driver(client_factory, "LINEARIZABLE", 2)
 

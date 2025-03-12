@@ -133,8 +133,10 @@ class ChordNode:
                 self.data_store[distance].pop(key, None)
 
         if distance < self.replication_factor-1:
-            self.forward_request("replicateModify", {**_kwargs, "seq": self.seq_to_succ, "distance": distance+1})
-            self.seq_to_succ += 1
+            with self.replicate_wakeup_lock:
+                seq_send = self.seq_to_succ
+                self.seq_to_succ += 1
+            self.forward_request("replicateModify", {**_kwargs, "seq": seq_send, "distance": distance+1})
         else:
             send_request(initial_url, "operation_resp", {"uid": uid, "response": "ok modify"}) #TODO: better message
         
@@ -146,15 +148,17 @@ class ChordNode:
         if seq is not None:
             with self.replicate_wakeup_lock:
                 if seq != self.seq_from_prev:
-                    #print("REORDERING", seq, self.seq_from_prev) TODO: remove
+                    #print("REORDERING", seq, self.seq_from_prev) #TODO: remove
                     self.reorder_buffer_replication[seq] = ("query", _kwargs)
                     return
                 else:
                     self.seq_from_prev += 1
 
         if distance < self.replication_factor-1:
-            self.forward_request("replicateQuery", {**_kwargs, "seq": self.seq_to_succ, "distance": distance+1})
-            self.seq_to_succ += 1
+            with self.replicate_wakeup_lock:
+                seq_send = self.seq_to_succ
+                self.seq_to_succ += 1
+            self.forward_request("replicateQuery", {**_kwargs, "seq": seq_send, "distance": distance+1})
         else:
             res = self.data_store[-1].get(key, None)
             # Inform initial node of result
@@ -177,11 +181,13 @@ class ChordNode:
                 del self.reorder_buffer_replication[seq_wakeup]
 
         if seq_wakeup is not None:
+            #print(f"WAKEUP {seq_wakeup}")
             match op:
                 case "modify":
                     self.replicate_modify(**kwargs)
                 case "query":
                     self.replicate_query(**kwargs)
+
 
     #TODO: Locks?
 
@@ -257,7 +263,8 @@ class ChordNode:
         self.keys_start = new_node_id + 1
 
         self.predecessor_url = new_node_url
-        self.seq_from_prev = 0
+        with self.replicate_wakeup_lock:
+            self.seq_from_prev = 0
 
         if self.replication_factor < self.max_replication_factor:
             self.inc_replication_factor(new_node_url, 1, new_node_start, new_node_id)
@@ -336,7 +343,8 @@ class ChordNode:
     def update_succ_info(self, new_node_url):
         new_node_id = self.hash_id(new_node_url)
         self.successor_url = new_node_url
-        self.seq_to_succ = 0
+        with self.replicate_wakeup_lock:
+            self.seq_to_succ = 0
 
         return "Successfully updated succ info"
 
@@ -345,6 +353,13 @@ class ChordNode:
         self.departed = True
 
         print(f"Node {self.node_id} beginning to depart", flush=True)
+
+        # wait until reorder buffer empties
+        while True:
+            with self.replicate_wakeup_lock:
+                if len(self.reorder_buffer_replication) == 0:
+                    break
+            time.sleep(0.1)
 
         send_request(self.predecessor_url, "update_succ_info",
                 {"new_node_url": self.successor_url}, nonblocking=True)
@@ -367,7 +382,8 @@ class ChordNode:
         self.keys_start       = keys_start
         self.predecessor_url  = predecessor_url
 
-        self.seq_from_prev = 0
+        with self.replicate_wakeup_lock:
+            self.seq_from_prev = 0
 
         self.data_store[1] |= self.data_store[0]  # shift_down_replicas will then move this one unit of distance downwards
         return self.shift_down_replicas(None, 0, maxdistance_replica)
