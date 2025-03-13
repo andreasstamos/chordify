@@ -24,9 +24,9 @@ server {
         try_files $uri $uri/ /index.html;
     }
 
-    location /vm1/api/ {
+    location ~ ^/vm1/(0|(?:[1-9]\d*))/api/(.*)$ {
         include proxy_params;
-        proxy_pass http://vm1/api/;
+        proxy_pass http://vm1/$1/api/$2;
     }
 
     location /vm1/management/ {
@@ -35,9 +35,9 @@ server {
     }
 
 
-    location /vm2/api/ {
+    location ~ ^/vm2/(0|(?:[1-9]\d*))/api/(.*)$ {
         include proxy_params;
-        proxy_pass http://vm2/api/;
+        proxy_pass http://vm2/$1/api/$2;
     }
 
     location /vm2/management/ {
@@ -46,9 +46,9 @@ server {
     }
 
 
-    location /vm3/api/ {
+    location ~ ^/vm3/(0|(?:[1-9]\d*))/api/(.*)$ {
         include proxy_params;
-        proxy_pass http://vm3/api/;
+        proxy_pass http://vm3/$1/api/$2;
     }
 
     location /vm3/management/ {
@@ -57,9 +57,9 @@ server {
     }
 
 
-    location /vm4/api/ {
+    location ~ ^/vm4/(0|(?:[1-9]\d*))/api/(.*)$ {
         include proxy_params;
-        proxy_pass http://vm4/api/;
+        proxy_pass http://vm4/$1/api/$2;
     }
 
     location /vm4/management/ {
@@ -68,9 +68,9 @@ server {
     }
 
 
-    location /vm5/api/ {
+    location ~ ^/vm5/(0|(?:[1-9]\d*))/api/(.*)$ {
         include proxy_params;
-        proxy_pass http://vm5/api/;
+        proxy_pass http://vm5/$1/api/$2;
     }
 
     location /vm5/management/ {
