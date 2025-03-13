@@ -24,30 +24,60 @@ server {
         try_files $uri $uri/ /index.html;
     }
 
-    location /vm1/ {
+    location /vm1/api/ {
         include proxy_params;
-        proxy_pass http://vm1/;
+        proxy_pass http://vm1/api/;
     }
 
-    location /vm2/ {
+    location /vm1/management/ {
         include proxy_params;
-        proxy_pass http://vm2/;
+        proxy_pass http://vm1/management/;
     }
 
-    location /vm3/ {
+
+    location /vm2/api/ {
         include proxy_params;
-        proxy_pass http://vm3/;
+        proxy_pass http://vm2/api/;
     }
 
-    location /vm4/ {
+    location /vm2/management/ {
         include proxy_params;
-        proxy_pass http://vm4/;
+        proxy_pass http://vm2/management/;
     }
 
-    location /vm5/ {
+
+    location /vm3/api/ {
         include proxy_params;
-        proxy_pass http://vm5/;
+        proxy_pass http://vm3/api/;
     }
+
+    location /vm3/management/ {
+        include proxy_params;
+        proxy_pass http://vm3/management/;
+    }
+
+
+    location /vm4/api/ {
+        include proxy_params;
+        proxy_pass http://vm4/api/;
+    }
+
+    location /vm4/management/ {
+        include proxy_params;
+        proxy_pass http://vm4/management/;
+    }
+
+
+    location /vm5/api/ {
+        include proxy_params;
+        proxy_pass http://vm5/api/;
+    }
+
+    location /vm5/management/ {
+        include proxy_params;
+        proxy_pass http://vm5/management/;
+    }
+
 
     listen 443 ssl; # managed by Certbot
     listen [::]:443 ssl ipv6only=on; # managed by Certbot
@@ -55,6 +85,9 @@ server {
     ssl_certificate_key /etc/letsencrypt/live/chordify.ddnsfree.com/privkey.pem; # managed by Certbot
     include /etc/letsencrypt/options-ssl-nginx.conf; # managed by Certbot
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem; # managed by Certbot
+
+
+    add_header Strict-Transport-Security "max-age=63072000" always;
 
 }
 
