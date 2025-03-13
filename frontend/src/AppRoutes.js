@@ -7,6 +7,7 @@ import NodeSelectionPage from './pages/NodeSelectionPage';
 import PhysicalManagementPage from './pages/PhysicalManagementPage';
 import ChordOperationsPage from './pages/ChordOperationsPage';
 import OverlayPage from './pages/OverlayPage';
+import ErrorPage from './pages/ErrorPage';
 
 import { AuthContext } from './context/AuthContext';
 
@@ -28,6 +29,7 @@ function AppRoutes() {
       <Route path="/physical-management" element={<RequireAuth> <PhysicalManagementPage /> </RequireAuth>}/>
       <Route path="/chord-operations" element={<RequireAuth> <ChordOperationsPage /> </RequireAuth>}/>
       <Route path="/overlay" element={<RequireAuth> <OverlayPage /> </RequireAuth>}/>
+      <Route path="*" element={<RequireAuth> <ErrorPage errorCode="404" errorMessage="We couldn't find the page you're looking for."/> </RequireAuth>} />
     </Routes>
   );
 }

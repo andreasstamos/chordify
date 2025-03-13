@@ -11,9 +11,6 @@ import {
   Divider,
   CircularProgress,
   Fade,
-  Checkbox,
-  FormControlLabel,
-  Link,
   IconButton
 } from '@mui/material';
 import { Close as CloseIcon } from '@mui/icons-material';
