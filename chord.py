@@ -88,6 +88,7 @@ class ChordNode:
 
         self.departed = False
 
+        self.finger_table = []
 
     @staticmethod
     def hash_id(value):
@@ -105,6 +106,38 @@ class ChordNode:
     def forward_request(self, endpoint, data, nonblocking=True):
         print(f"Forwarding {endpoint} request to the next node.")
         return send_request(self.successor_url, endpoint, data, nonblocking=nonblocking)
+
+    def update_finger_table(self):
+        try:
+            nodes = self.get_overlay_nodes()
+            nodes = sorted(nodes, key=lambda n: self.hash_id(n["url"]))
+            m = min(len(nodes), 4)
+            new_finger_table = []
+            for i in range(m):
+                start = (self.node_id + 2**i) % (2**160)
+                succ = None
+                for node in nodes:
+                    if self.hash_id(node["url"]) >= start:
+                        succ = node["url"]
+                        break
+                if succ is None:
+                    succ = nodes[0]["url"]
+                new_finger_table.append(succ)
+            self.finger_table = new_finger_table
+        except Exception as e:
+            self.finger_table = [self.successor_url]
+
+    def get_overlay_nodes(self):
+        return self.operation_driver(self.overlay, None)
+
+    def finger_lookup(self, key_hash):
+        self.update_finger_table()
+        if self.lies_in_range(self.node_id, self.hash_id(self.successor_url), key_hash):
+            return self.successor_url
+        for finger in reversed(self.finger_table):
+            if finger and self.lies_in_range(self.node_id, key_hash, self.hash_id(finger)):
+                return finger
+        return self.successor_url
 
     @with_kwargs
     def replicate_modify(self, seq, uid, initial_url, operation, key, value, distance, _kwargs=None):
@@ -203,7 +236,8 @@ class ChordNode:
         if self.is_responsible(key_hash):
             self.replicate_modify(None, uid, initial_url, operation, key, value, 0)
         else:
-            return self.forward_request("modify", _kwargs)
+            next_node = self.finger_lookup(key_hash)
+            return send_request(next_node, "modify", _kwargs)
 
     @with_kwargs
     def query(self, uid, initial_url, key, _kwargs=None):
@@ -214,14 +248,16 @@ class ChordNode:
                     return send_request(initial_url, "operation_resp", {"uid": uid, "response": data_store_i[key]})
             if self.successor_url == initial_url:
                 return send_request(initial_url, "operation_resp", {"uid": uid, "response": None})
-            self.forward_request("query", _kwargs)
+            next_node = self.finger_lookup(self.hash_id(key))
+            return send_request(next_node, "query", _kwargs)
         else:
             # LINEARIZABLE
             key_hash = self.hash_id(key)
             if self.is_responsible(key_hash):
                 self.replicate_query(None, uid, initial_url, key, 0)
             else:
-                return self.forward_request("query", _kwargs)
+                next_node = self.finger_lookup(key_hash)
+                return send_request(next_node, "query", _kwargs)
 
     @with_kwargs
     def query_star(self, uid, initial_url, value=None, _kwargs=None):
@@ -705,4 +741,3 @@ if __name__ == "__main__":
     init_app(app)
     with app.app_context():
         chord_cli(current_app.chord_node)
-
