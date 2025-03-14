@@ -25,6 +25,7 @@ next_id = 1
 HAVE_BOOTSTRAP = True if os.environ["HAVE_BOOTSTRAP"]=="TRUE" else False
 BASE_URL = os.environ["BASE_URL"]
 BOOTSTRAP_URL = os.environ["BOOTSTRAP_URL"]
+LOCKING_SRV_URL = os.environ["LOCKING_SRV_URL"]
 
 def monitor_worker(worker_id, proc):
     proc.wait()
@@ -43,7 +44,10 @@ def is_bootstrap_alive():
 def spawn_worker():
     global next_id
 
+    requests.post(f"{LOCKING_SRV_URL}/lock-acquire", json={})
+
     if not is_bootstrap_alive():
+        requests.post(f"{LOCKING_SRV_URL}/lock-release", json={})
         return {"error": "Bootstrap Node is not running."}
 
     worker_id = next_id
@@ -52,7 +56,7 @@ def spawn_worker():
     socket_path = os.path.join(tempfile.gettempdir(), f"worker_{worker_id}.sock")
     if os.path.exists(socket_path):
         os.remove(socket_path)
-    
+
     cmd = [
         "gunicorn",
         "-m",
@@ -67,11 +71,12 @@ def spawn_worker():
         "gunicorn_conf.py",
         "chord:app",
     ]
-    
+
     env = {
         "IS_BOOTSTRAP": "FALSE",
         "NODE_URL": f"{BASE_URL}/{worker_id}",
-        "BOOTSTRAP_URL": BOOTSTRAP_URL
+        "BOOTSTRAP_URL": BOOTSTRAP_URL,
+        "LOCKING_SRV_URL": LOCKING_SRV_URL
     }
     proc = subprocess.Popen(cmd, env={**os.environ, **env})
     workers[worker_id] = {"process": proc, "socket_path": socket_path}
@@ -79,23 +84,36 @@ def spawn_worker():
     monitor_thread = threading.Thread(target=monitor_worker, args=(worker_id, proc), daemon=False)
     monitor_thread.start()
 
+    while not os.path.exists(socket_path):
+        time.sleep(0.1)
+    time.sleep(0.1)
+
+    requests.post(f"{BASE_URL}/{worker_id}/init", json={})
+
+    requests.post(f"{LOCKING_SRV_URL}/lock-release", json={})
+
     return {"id": worker_id}
 
 
 @app.route("/management/spawnBootstrap", methods=["POST"])
 @schemas.validate_json(schemas.SPAWN_BOOTSTRAP_SCHEMA)
 def spawn_bootstrap():
+
     data = request.get_json()
 
     if not HAVE_BOOTSTRAP:
         return {"error": "This node cannot have a bootstrap node."}
+
+
     if 0 in workers:
         return {"error": "Bootstrap node is currently running."}
-    
+
+    requests.post(f"{LOCKING_SRV_URL}/lock-acquire", json={})
+
     socket_path = os.path.join(tempfile.gettempdir(), "worker_bootstrap.sock")
     if os.path.exists(socket_path):
         os.remove(socket_path)
-    
+
     cmd = [
         "gunicorn",
         "-m",
@@ -110,18 +128,27 @@ def spawn_bootstrap():
         "gunicorn_conf.py",
         "chord:app",
     ]
-    
+
     env = {
         "IS_BOOTSTRAP": "TRUE",
         "NODE_URL": f"{BASE_URL}/0",
         "CONSISTENCY_MODEL": data["consistency_model"],
-        "REPLICATION_FACTOR": str(data["replication_factor"])
+        "REPLICATION_FACTOR": str(data["replication_factor"]),
+        "LOCKING_SRV_URL": LOCKING_SRV_URL
     }
     proc = subprocess.Popen(cmd, env={**os.environ, **env})
     workers[0] = {"process": proc, "socket_path": socket_path}
 
     monitor_thread = threading.Thread(target=monitor_worker, args=(0, proc), daemon=False)
     monitor_thread.start()
+
+    while not os.path.exists(socket_path):
+        time.sleep(0.1)
+    time.sleep(0.1)
+
+    requests.post(f"{BASE_URL}/0/init", json={})
+
+    requests.post(f"{LOCKING_SRV_URL}/lock-release", json={})
 
     return {"id": 0}
 
@@ -137,9 +164,9 @@ def killall_workers():
     for worker_id, worker in workers.items():
         try:
             parent = psutil.Process(worker["process"].pid)
-            parent.kill()
             for child in parent.children(recursive=True):
                 child.kill()
+            parent.kill()
         except psutil.NoSuchProcess:
             pass
         if os.path.exists(worker["socket_path"]):

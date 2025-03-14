@@ -47,9 +47,11 @@ def send_request(url, endpoint, data, nonblocking=True):
 
 
 class ChordNode:
-    def __init__(self, url, replication_factor=None, consistency_model=None, is_bootstrap=False):
+    def __init__(self, url, locking_srv_url, replication_factor=None, consistency_model=None, is_bootstrap=False):
         self.url = url
         self.node_id = self.hash_id(url)
+
+        self.locking_srv_url = locking_srv_url
 
         self.successor_url   = url if is_bootstrap else None
         self.predecessor_url = url if is_bootstrap else None
@@ -99,10 +101,10 @@ class ChordNode:
 
     def is_responsible(self, key_hash):
         return self.lies_in_range(self.keys_start, self.keys_end, key_hash)
-        
-    def forward_request(self, endpoint, data):
+
+    def forward_request(self, endpoint, data, nonblocking=True):
         print(f"Forwarding {endpoint} request to the next node.")
-        return send_request(self.successor_url, endpoint, data)
+        return send_request(self.successor_url, endpoint, data, nonblocking=nonblocking)
 
     @with_kwargs
     def replicate_modify(self, seq, uid, initial_url, operation, key, value, distance, _kwargs=None):
@@ -143,7 +145,7 @@ class ChordNode:
             self.forward_request("replicateModify", {**_kwargs, "seq": seq_send, "distance": distance+1})
         else:
             send_request(initial_url, "operation_resp", {"uid": uid, "response": "ok modify"}) #TODO: better message
-        
+
         self.replicate_wakeup()
 
 
@@ -202,7 +204,7 @@ class ChordNode:
             self.replicate_modify(None, uid, initial_url, operation, key, value, 0)
         else:
             return self.forward_request("modify", _kwargs)
-           
+
     @with_kwargs
     def query(self, uid, initial_url, key, _kwargs=None):
         # We assume that key != "*" here
@@ -230,7 +232,7 @@ class ChordNode:
                 value = {}
             value = value | self.data_store[-1]
             self.forward_request("query_star", {**_kwargs, "value":value})
- 
+
     def new_pred(self, new_node_url):
         new_node_id = self.hash_id(new_node_url)
 
@@ -261,7 +263,7 @@ class ChordNode:
         # inform my old predecessor to update his successor to new_node_url
         send_request(self.predecessor_url, "update_succ_info", { 
             "new_node_url": new_node_url}, nonblocking=False)
-        
+
         new_node_start = self.keys_start
 
         self.keys_start = new_node_id + 1
@@ -305,7 +307,7 @@ class ChordNode:
             self.data_store[distance] = {k:v for k,v in self.data_store[distance].items() \
                     if self.lies_in_range(new_node_start, new_node_end, self.hash_id(k))}
 
-            self.forward_request("incReplicationFactor", {**_kwargs, "distance": distance+1})
+            self.forward_request("incReplicationFactor", {**_kwargs, "distance": distance+1}, nonblocking=False)
 
     def shift_up_replicas(self, distance, exclude_start, exclude_end):
         for i in range(distance+2, self.replication_factor)[::-1]:
@@ -323,7 +325,7 @@ class ChordNode:
                 "distance": distance+1,
                 "exclude_start": exclude_start,
                 "exclude_end":   exclude_end
-                })
+                }, nonblocking=False)
 
     @with_kwargs
     def join_request(self, new_node_url, _kwargs=None):
@@ -334,13 +336,13 @@ class ChordNode:
             self.new_pred(new_node_url)
         else:
             data = {"new_node_url": new_node_url}
-            self.forward_request("join", _kwargs)
+            self.forward_request("join", _kwargs, nonblocking=False)
             return "Forwarded join_request request"
-    
+
     def join_existing(self, bootstrap_url):
         join_cmd = {"new_node_url": self.url}
         try:
-            send_request(bootstrap_url, "join", join_cmd)
+            send_request(bootstrap_url, "join", join_cmd, nonblocking=False)
         except Exception as e:
             print("Error joining chord ring:", e, flush=True)
 
@@ -356,6 +358,8 @@ class ChordNode:
         if self.departed: return
         self.departed = True
 
+        send_request(self.locking_srv_url, "lock-acquire", {}, nonblocking=False)
+
         print(f"Node {self.node_id} beginning to depart", flush=True)
 
         # wait until reorder buffer empties
@@ -366,17 +370,19 @@ class ChordNode:
             time.sleep(0.1)
 
         send_request(self.predecessor_url, "update_succ_info",
-                {"new_node_url": self.successor_url}, nonblocking=True)
+                {"new_node_url": self.successor_url}, nonblocking=False)
 
         self.forward_request("departPred", {
             "keys_start": self.keys_start,
             "predecessor_url": self.predecessor_url,
             "maxdistance_replica": self.data_store[-1]
-            })
+            }, nonblocking=False)
 
         self.successor_url = None
         self.predecessor_url = None
-        
+
+        send_request(self.locking_srv_url, "lock-release", {}, nonblocking=False)
+
         my_pid = os.getpid()
         os.kill(my_pid, signal.SIGINT)
 
@@ -391,7 +397,7 @@ class ChordNode:
 
         self.data_store[1] |= self.data_store[0]  # shift_down_replicas will then move this one unit of distance downwards
         return self.shift_down_replicas(None, 0, maxdistance_replica)
-    
+
     def shift_down_replicas(self, initial_url, distance, maxdistance_replica):
         if initial_url == self.url:
             return self.dec_replication_factor(None)
@@ -400,7 +406,7 @@ class ChordNode:
             self.data_store[i] = self.data_store[i+1]
         old_maxdistance_replica = self.data_store[-1]
         self.data_store[-1] = maxdistance_replica
-   
+
         if distance < self.replication_factor-1:
             if initial_url is None:
                 initial_url = self.url
@@ -408,7 +414,7 @@ class ChordNode:
                 "initial_url": initial_url,
                 "distance": distance+1,
                 "maxdistance_replica": old_maxdistance_replica
-                })
+                }, nonblocking=False)
 
     def dec_replication_factor(self, initial_url):
         if initial_url==self.url:
@@ -418,7 +424,7 @@ class ChordNode:
             self.data_store.pop()
             if initial_url is None:
                 initial_url = self.url
-            self.forward_request("decReplicationFactor", {"initial_url": initial_url})
+            self.forward_request("decReplicationFactor", {"initial_url": initial_url}, nonblocking=False)
 
     @with_kwargs
     def overlay(self, uid, initial_url, nodes=None, _kwargs=None):
@@ -437,7 +443,7 @@ class ChordNode:
             else:
                 nodes.append(node)
             self.forward_request("overlay", {**_kwargs, "nodes": nodes})
- 
+
     def debug_print_keys(self):
         print("Printing Hash Table:", flush=True)
         for i, data_store_replica in enumerate(self.data_store):
@@ -460,21 +466,22 @@ class ChordNode:
         self.pending_requests[uid]["response"] = response
         self.pending_requests[uid]["event"].set()
 
-def init_app(app):
-    IS_BOOTSTRAP  = os.environ["IS_BOOTSTRAP"]
-    NODE_URL      = os.environ["NODE_URL"]
+def init_app():
+    IS_BOOTSTRAP    = os.environ["IS_BOOTSTRAP"]
+    NODE_URL        = os.environ["NODE_URL"]
+    LOCKING_SRV_URL = os.environ["LOCKING_SRV_URL"]
     if IS_BOOTSTRAP=="TRUE":
         CONSISTENCY_MODEL  = os.environ["CONSISTENCY_MODEL"]
         REPLICATION_FACTOR = int(os.environ["REPLICATION_FACTOR"])
-        
-        chord_node = ChordNode(NODE_URL, consistency_model=CONSISTENCY_MODEL, replication_factor=REPLICATION_FACTOR, is_bootstrap=True)
+
+        chord_node = ChordNode(url=NODE_URL, locking_srv_url=LOCKING_SRV_URL,\
+                consistency_model=CONSISTENCY_MODEL, replication_factor=REPLICATION_FACTOR, is_bootstrap=True)
     else:
         BOOTSTRAP_URL = os.environ["BOOTSTRAP_URL"]
-        chord_node = ChordNode(NODE_URL)
+        chord_node = ChordNode(url=NODE_URL, locking_srv_url=LOCKING_SRV_URL)
 
-    with app.app_context():
-        current_app.chord_node = chord_node
-        if IS_BOOTSTRAP!="TRUE": current_app.chord_node.join_existing(BOOTSTRAP_URL)
+    current_app.chord_node = chord_node
+    if IS_BOOTSTRAP!="TRUE": current_app.chord_node.join_existing(BOOTSTRAP_URL)
 
 app = Flask(__name__)
 
@@ -482,6 +489,11 @@ def cleanup_app(app):
     with app.app_context():
         if not current_app.chord_node.is_bootstrap:
             current_app.chord_node.depart()
+
+@app.route("/init", methods=['POST'])
+def handle_init():
+    init_app()
+    return {}
 
 @app.route('/modify', methods=['POST'])
 def handle_modify():
@@ -686,7 +698,7 @@ if __name__ == "__main__":
         url = os.environ["NODE_URL"][7:]
         ip, port = url.split(":")
         app.run(host=ip, port=port, threaded=True)
-    
+
     flask_thread = threading.Thread(target=start_flask_app, daemon=False)
     # TODO: alternative?       
     time.sleep(1)

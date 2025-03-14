@@ -114,6 +114,11 @@ server {
         proxy_pass http://vm1/;
     }
 
+    location /locking/ {
+        include proxy_params;
+        proxy_pass http://locking/;
+    }
+
     listen 5000;
     listen [::]:5000;
 
@@ -137,5 +142,9 @@ upstream vm4 {
 
 upstream vm5 {
     server 10.0.35.111:5000;
+}
+
+upstream locking {
+    server unix:/home/ubuntu/chordify/chordify_locking.sock;
 }
 

@@ -29,11 +29,9 @@ def benchmark_driver(client_factory, consistency_model, replication_factor):
     for physical in client.physical_urls:
         client.physical = physical
         client.killall()
-    time.sleep(1)
 
     client.physical = "vm1"
     client.spawn_bootstrap(consistency_model, replication_factor)
-    time.sleep(1)
     client.spawn()
 
     for physical in client.physical_urls:
@@ -41,7 +39,6 @@ def benchmark_driver(client_factory, consistency_model, replication_factor):
         client.physical = physical
         client.spawn()
         client.spawn()
-    time.sleep(1)
 
     times_bench1 = [None for _ in range(10)]
     times_bench2 = [None for _ in range(10)]
@@ -86,7 +83,6 @@ def benchmark_driver(client_factory, consistency_model, replication_factor):
     for physical in client.physical_urls:
         client.physical = physical
         client.killall()
-    time.sleep(1)
 
     return time_bench1, time_bench2
 
