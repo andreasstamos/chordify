@@ -109,7 +109,7 @@ function QueryOperation({ onQueryKey, onQueryAll }) {
       <Typography variant="h6" gutterBottom>
         Query
       </Typography>
-      <Box sx={{ display: 'flex', gap: 2, mb: 2 }}>
+      <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 2, mb: 2 }}>
         <TextField
           label="Key"
           value={queryKey}
