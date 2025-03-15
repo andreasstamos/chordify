@@ -131,7 +131,6 @@ class ChordNode:
         return self.operation_driver(self.overlay, None)
 
     def finger_lookup(self, key_hash):
-        self.update_finger_table()
         if self.lies_in_range(self.node_id, self.hash_id(self.successor_url), key_hash):
             return self.successor_url
         for finger in reversed(self.finger_table):
@@ -328,6 +327,9 @@ class ChordNode:
         self.seq_to_succ   = 0
         self.seq_from_prev = 0
 
+        self.update_finger_table()
+
+
     @with_kwargs
     def inc_replication_factor(self, initial_url, distance, new_node_start, new_node_end, _kwargs=None):
         if initial_url==self.url:
@@ -370,6 +372,8 @@ class ChordNode:
         if self.is_responsible(new_node_id):
             print(f"Trying to insert {new_node_id}")
             self.new_pred(new_node_url)
+            self.update_finger_table()
+
         else:
             data = {"new_node_url": new_node_url}
             self.forward_request("join", _kwargs, nonblocking=False)
@@ -388,6 +392,7 @@ class ChordNode:
         with self.replicate_wakeup_lock:
             self.seq_to_succ = 0
 
+        self.update_finger_table()
         return "Successfully updated succ info"
 
     def depart(self):
@@ -432,6 +437,7 @@ class ChordNode:
             self.seq_from_prev = 0
 
         self.data_store[1] |= self.data_store[0]  # shift_down_replicas will then move this one unit of distance downwards
+        self.update_finger_table()
         return self.shift_down_replicas(None, 0, maxdistance_replica)
 
     def shift_down_replicas(self, initial_url, distance, maxdistance_replica):
