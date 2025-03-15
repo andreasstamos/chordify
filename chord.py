@@ -96,7 +96,8 @@ class ChordNode:
 
     @staticmethod
     def lies_in_range(start, end, key_hash):
-        return (start <= key_hash <= end) or \
+        return (start == end) or \
+            (start <= key_hash <= end) or \
             (end < start <= key_hash) or \
             (key_hash <= end < start)
 
@@ -107,36 +108,55 @@ class ChordNode:
         print(f"Forwarding {endpoint} request to the next node.")
         return send_request(self.successor_url, endpoint, data, nonblocking=nonblocking)
 
-    def update_finger_table(self):
-        try:
-            nodes = self.get_overlay_nodes()
-            nodes = sorted(nodes, key=lambda n: self.hash_id(n["url"]))
-            m = min(len(nodes), 4)
-            new_finger_table = []
-            for i in range(m):
-                start = (self.node_id + 2**i) % (2**160)
-                succ = None
-                for node in nodes:
-                    if self.hash_id(node["url"]) >= start:
-                        succ = node["url"]
-                        break
-                if succ is None:
-                    succ = nodes[0]["url"]
-                new_finger_table.append(succ)
-            self.finger_table = new_finger_table
-        except Exception as e:
-            self.finger_table = [self.successor_url]
+    def propagate_update_finger_table_phase1(self, initial_url, nodes):
+        if initial_url == self.url:
+            self.propagate_update_finger_table_phase2(None, nodes)
+        else:
+            if initial_url is None:
+                initial_url = self.url
+                nodes = []
+            nodes.append(self.url)
+            self.forward_request("updateFingerTablePhase1", {"initial_url": initial_url, "nodes": nodes}, nonblocking=False)
 
-    def get_overlay_nodes(self):
-        return self.operation_driver(self.overlay, None)
+    def propagate_update_finger_table_phase2(self, initial_url, nodes):
+        if initial_url == self.url:
+            return
+        else:
+            self.update_finger_table(nodes)
+
+            if initial_url is None:
+                initial_url = self.url
+            self.forward_request("updateFingerTablePhase2", {"initial_url": initial_url, "nodes": nodes}, nonblocking=False)
+
+    def update_finger_table(self, nodes):
+        nodes = sorted(nodes, key=self.hash_id)
+
+        # circular rotation so that first node is the successor
+        succ_idx = nodes.index(self.successor_url)
+        nodes = nodes[succ_idx:] + nodes[:succ_idx]
+        print(nodes)
+        new_finger_table = []
+        for i in range(160):
+            start = (self.node_id + 2**i) % (2**160)
+            for node in nodes:
+                if self.lies_in_range(self.node_id, self.hash_id(node), start):
+                    # first(/nearest) node that may include keys>=start.
+                    new_finger_table.append(node)
+                    break
+            else:
+                assert False
+        self.finger_table = new_finger_table
 
     def finger_lookup(self, key_hash):
         if self.lies_in_range(self.node_id, self.hash_id(self.successor_url), key_hash):
             return self.successor_url
-        for finger in reversed(self.finger_table):
-            if finger and self.lies_in_range(self.node_id, key_hash, self.hash_id(finger)):
-                return finger
-        return self.successor_url
+        # forward to the nearest node that is strictly before the responsible node.
+        # the check for the successor is necessary as it is the actual responsible node, and not
+        # a node before it.
+        for finger_prev, finger in zip(self.finger_table, self.finger_table[1:]):
+            if self.lies_in_range(self.node_id, self.hash_id(finger), key_hash):
+                return finger_prev
+        return self.finger_table[-1]
 
     @with_kwargs
     def replicate_modify(self, seq, uid, initial_url, operation, key, value, distance, _kwargs=None):
@@ -327,7 +347,6 @@ class ChordNode:
         self.seq_to_succ   = 0
         self.seq_from_prev = 0
 
-        self.update_finger_table()
 
 
     @with_kwargs
@@ -372,7 +391,6 @@ class ChordNode:
         if self.is_responsible(new_node_id):
             print(f"Trying to insert {new_node_id}")
             self.new_pred(new_node_url)
-            self.update_finger_table()
 
         else:
             data = {"new_node_url": new_node_url}
@@ -383,6 +401,7 @@ class ChordNode:
         join_cmd = {"new_node_url": self.url}
         try:
             send_request(bootstrap_url, "join", join_cmd, nonblocking=False)
+            self.propagate_update_finger_table_phase1(None, None)
         except Exception as e:
             print("Error joining chord ring:", e, flush=True)
 
@@ -392,7 +411,6 @@ class ChordNode:
         with self.replicate_wakeup_lock:
             self.seq_to_succ = 0
 
-        self.update_finger_table()
         return "Successfully updated succ info"
 
     def depart(self):
@@ -437,8 +455,9 @@ class ChordNode:
             self.seq_from_prev = 0
 
         self.data_store[1] |= self.data_store[0]  # shift_down_replicas will then move this one unit of distance downwards
-        self.update_finger_table()
-        return self.shift_down_replicas(None, 0, maxdistance_replica)
+
+        self.propagate_update_finger_table_phase1(None, None)
+        self.shift_down_replicas(None, 0, maxdistance_replica)
 
     def shift_down_replicas(self, initial_url, distance, maxdistance_replica):
         if initial_url == self.url:
@@ -626,6 +645,19 @@ def handle_dec_replication_factor():
     data = request.get_json()
     response = current_app.chord_node.dec_replication_factor(**data)
     return jsonify({"response": "Ok dec replication factor"})
+
+@app.route('/updateFingerTablePhase1', methods=['POST'])
+def handle_update_finger_table_phase1():
+    data = request.get_json()
+    response = current_app.chord_node.propagate_update_finger_table_phase1(**data)
+    return jsonify({"response": "Ok update finger table phase 1"})
+
+@app.route('/updateFingerTablePhase2', methods=['POST'])
+def handle_update_finger_table_phase2():
+    data = request.get_json()
+    response = current_app.chord_node.propagate_update_finger_table_phase2(**data)
+    return jsonify({"response": "Ok update finger table phase 2"})
+
 
 @app.route('/api/depart', methods=['POST'])
 @schemas.validate_json(schemas.API_DEPART_SCHEMA)
