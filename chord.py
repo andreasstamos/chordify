@@ -262,6 +262,10 @@ class ChordNode:
     def query(self, uid, initial_url, key, _kwargs=None):
         # We assume that key != "*" here
         if self.consistency_model == "EVENTUAL":
+            if self.is_responsible(self.hash_id(key)):
+                res = self.data_store[-1].get(key, None)
+                send_request(initial_url, "operation_resp", {"uid": uid, "response": res})
+                return
             for data_store_i in self.data_store[::-1]:
                 if key in data_store_i:
                     return send_request(initial_url, "operation_resp", {"uid": uid, "response": data_store_i[key]})
