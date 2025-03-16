@@ -98,6 +98,27 @@ services:
     restart: always
     stop_grace_period: 0s
 
+  benchmark_consistency:
+    build:
+      dockerfile: ./docker/benchmark/Dockerfile
+    stdin_open: true
+    tty: true
+    attach: false
+    networks:
+      - internal_net
+    depends_on:
+      - vm1
+      - vm2
+      - vm3
+      - vm4
+      - vm5
+    environment:
+      - CHORD_CLI_SSL_VERIFY=FALSE
+      - CHORD_DOCKER=TRUE
+    restart: always
+    stop_grace_period: 0s
+    command: ./benchmark_consistency.py
+
 networks:
   internal_net:
     internal:

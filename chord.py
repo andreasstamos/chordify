@@ -263,14 +263,12 @@ class ChordNode:
         # We assume that key != "*" here
         if self.consistency_model == "EVENTUAL":
             if self.is_responsible(self.hash_id(key)):
-                res = self.data_store[-1].get(key, None)
+                res = self.data_store[0].get(key, None)
                 send_request(initial_url, "operation_resp", {"uid": uid, "response": res})
                 return
             for data_store_i in self.data_store[::-1]:
                 if key in data_store_i:
                     return send_request(initial_url, "operation_resp", {"uid": uid, "response": data_store_i[key]})
-            if self.successor_url == initial_url:
-                return send_request(initial_url, "operation_resp", {"uid": uid, "response": None})
             next_node = self.finger_lookup(self.hash_id(key))
             return send_request(next_node, "query", _kwargs)
         else:

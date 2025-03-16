@@ -3,27 +3,22 @@
 import os
 import time
 import cli
+import copy
 import threading
+import random
+from collections import defaultdict
 import tqdm
 
 REPLICATION_FACTORS = [1,3,5]
 CONSISTENCY_MODELS = ["LINEARIZABLE", "EVENTUAL"]
 
 
-INSERTS  = [None for _ in range(10)]
-QUERIES  = [None for _ in range(10)]
 REQUESTS = [None for _ in range(10)]
 
-INSERT_VALUE = ""
-
 for i in range(10):
-    with open(f"./benchmark_data/insert_{i:02}_part.txt") as f:
-        INSERTS[i] = [line.strip() for line in f.readlines()]
-    with open(f"./benchmark_data/query_{i:02}.txt") as f:
-        QUERIES[i] = [line.strip() for line in f.readlines()]
     with open(f"./benchmark_data/requests_{i:02}.txt") as f:
-        REQUESTS[i] = [line.strip().split(maxsplit=1) for line in f.readlines()]
-
+        REQUESTS[i] = [line.strip().split(',') for line in f.readlines()]
+        REQUESTS[i] = [[word.strip() for word in req] for req in REQUESTS[i]]
 
 def calculate_indexes(node_index):
     physical_idx = 1 + node_index // 2
@@ -34,11 +29,27 @@ def calculate_indexes(node_index):
 
     return physical_idx, logical_idx
 
+def random_schedule(all_requests):
+    all_requests = copy.deepcopy(all_requests)
+    schedule = []
 
-def benchmark_driver(client_factory, consistency_model, replication_factor):
+    def actives():
+        return [node_index for node_index, reqs in enumerate(all_requests) if len(reqs) >= 1]
+
+    while True:
+        act = actives()
+        if not act:
+            break
+        node_index = random.choice(act)
+        schedule.append((node_index, all_requests[node_index].pop(0)))
+    return schedule
+
+
+def benchmark_driver(client_factory, consistency_model, replication_factor, schedule):
     print("Setting up...")
 
     client = client_factory()
+
     for physical in client.physical_urls:
         client.physical = physical
         client.killall()
@@ -58,56 +69,43 @@ def benchmark_driver(client_factory, consistency_model, replication_factor):
             client.spawn()
             pbar.update(1)
 
-    times_bench1 = [None for _ in range(10)]
-    times_bench2 = [None for _ in range(10)]
+    dht = defaultdict(lambda: "")
+    stale_reads = 0
 
-    def node_driver(node_index, pbar):
-        nonlocal times_bench1, times_bench2
-
+    print("Start benchmarking...")
+    for node_index, event in tqdm.tqdm(schedule):
         physical_idx, logical_idx = calculate_indexes(node_index)
 
-        client = client_factory()
         client.physical = f"vm{physical_idx}"
         client.logical = str(logical_idx)
 
-        t_start = time.time()
-        for insert_key in INSERTS[node_index]:
-            client.modify("insert", insert_key, INSERT_VALUE)
-            pbar.update(1)
-        t_end = time.time()
-        times_bench1[node_index] = t_end-t_start
-
-        t_start = time.time()
-        for query_key in QUERIES[node_index]:
-            client.query(query_key)
-            pbar.update(1)
-        t_end = time.time()
-        times_bench2[node_index] = t_end-t_start
-
-    print("Start benchmarking...")
-    with tqdm.tqdm(total=sum(len(req) for req in INSERTS) + sum(len(req) for req in QUERIES)) as pbar:
-        threads = [threading.Thread(target=node_driver, args=(node_index, pbar), daemon=False) for node_index in range(10)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
+        match event[0]:
+            case "insert":
+                client.modify("insert", event[1], event[2])
+                dht[event[1]] += event[2]
+            case "query":
+                val = client.query(event[1])
+                if val != dht.get(event[1], None):
+                    print(val, dht.get(event[1], None))
+                    stale_reads += 1
+            case _:
+                assert False
     print("Benchmarking done.")
-
-    time_bench1 = max(times_bench1)
-    time_bench2 = max(times_bench2)
 
     print("Cleaning up...")
     for physical in client.physical_urls:
         client.physical = physical
         client.killall()
 
-    return time_bench1, time_bench2
+    return stale_reads
 
 def run_benchmarks(client_factory):
     results = {}
+    schedule = random_schedule(REQUESTS)
+
     for replication_factor in REPLICATION_FACTORS:
         for consistency_model in CONSISTENCY_MODELS:
-            result = benchmark_driver(client_factory, consistency_model, replication_factor)
+            result = benchmark_driver(client_factory, consistency_model, replication_factor, schedule)
             results[(consistency_model, replication_factor)] = result
     return results
 
@@ -148,14 +146,13 @@ if __name__ == "__main__":
     else:
         f = open("meas.csv", "w", newline='')
     with f:
-        writer = csv.DictWriter(f, fieldnames=["consistency_model", "replication_factor", "time_bench1", "time_bench2"])
+        writer = csv.DictWriter(f, fieldnames=["consistency_model", "replication_factor", "stale_reads"])
         writer.writeheader()
-        for (consistency_model, replication_factor), (time_bench1, time_bench2) in results.items():
+        for (consistency_model, replication_factor), stale_reads in results.items():
             writer.writerow({
                 "consistency_model": consistency_model,
                 "replication_factor": replication_factor,
-                "time_bench1": time_bench1,
-                "time_bench2": time_bench2
+                "stale_reads": stale_reads
                 })
         if CHORD_DOCKER:
             print()
