@@ -18,7 +18,7 @@ RUN apt update
 RUN apt install -y nginx python3.11-venv
 
 RUN mkdir /etc/nginx/ssl
-RUN openssl req -x509 -nodes -days 365 -newkey rsa:4096\
+RUN openssl req -x509 -nodes -days 36500 -newkey rsa:4096\
 	    -keyout /etc/nginx/ssl/nginx.key \
 	    -out /etc/nginx/ssl/nginx.crt \
 	    -subj "/CN=localhost"
