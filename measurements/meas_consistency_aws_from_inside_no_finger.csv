@@ -1,0 +1,7 @@
+consistency_model,replication_factor,stale_reads
+LINEARIZABLE,1,0
+EVENTUAL,1,0
+LINEARIZABLE,3,0
+EVENTUAL,3,0
+LINEARIZABLE,5,0
+EVENTUAL,5,2
