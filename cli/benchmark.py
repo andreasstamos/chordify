@@ -2,7 +2,6 @@
 
 import os
 import time
-import cli
 import threading
 import tqdm
 
@@ -123,13 +122,14 @@ if __name__ == "__main__":
     import cli
 
     CHORD_CLI_SSL_VERIFY = os.environ.get("CHORD_CLI_SSL_VERIFY","TRUE") != "FALSE"
+    CHORD_DOCKER = os.environ.get("CHORD_DOCKER", None)
 
     if not CHORD_CLI_SSL_VERIFY:
         import urllib3
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    if CHORD_DOCKER:
         import io
 
-    CHORD_DOCKER = os.environ.get("CHORD_DOCKER", None)
 
     if CHORD_DOCKER:
         input("Press <Enter> to start benchmarking.")

@@ -1,25 +1,16 @@
 import functools
-from flask import Flask, request, jsonify, current_app
 import uuid
 import threading
 import hashlib
-import sys
-import json
-import requests
 import time
-import readline
 import inspect
-
 import os
 import signal
 
+import requests
+from flask import Flask, request, jsonify, current_app
+
 import schemas
-
-# Question: What happens if two nodes hash to the same value?
-# For n nodes, the probability is ~ n^2/(2*2**160). (sha1 is 160 bits)
-# For 1000 nodes this is 3e-43. we can accept this.
-
-# TODO: Maybe do not wait for response by default?
 
 def with_kwargs(func):
     sig = inspect.signature(func)
@@ -72,11 +63,10 @@ class ChordNode:
         # Writes are propagated to node No.4 and Reads are propagated to node No.6.
         # Node 6 must know for which keys it can answer requests.
 
-        # README: join/depart. 
+        # join/depart.
         # when join/depart we must ensure that replication factor is kept at k.
         # data_store[i] is the replica in distance i from the node responsible for a key.
         # reads are performed at data_store[-1].
-        # when join the new node takes a complete 
 
 
         self.seq_to_succ = 0
@@ -169,13 +159,12 @@ class ChordNode:
         # For a fact, modern versions of HTTP have been designed so as to avoid this "FIFOness". (aka if a browser requests two images in
         # different requests, it doesnt really care when rendering if they appear on the (random?) order they were asked, just that the
         # user sees images as fast as possible)
-        # 
+        #
         # Seq=None is given by the initial caller (call that doesnt come from the network)
 
         if seq is not None:
             with self.replicate_wakeup_lock:
                 if seq != self.seq_from_prev:
-                    #print("REORDERING", seq, self.seq_from_prev) #TODO: remove
                     self.reorder_buffer_replication[seq] = ("modify", _kwargs)
                     return
                 else:
@@ -197,7 +186,7 @@ class ChordNode:
             self.forward_request("replicateModify", {**_kwargs, "seq": seq_send, "distance": distance+1})
         else:
             if self.consistency_model != "EVENTUAL":
-                send_request(initial_url, "operation_resp", {"uid": uid, "response": "ok modify"}) #TODO: better message
+                send_request(initial_url, "operation_resp", {"uid": uid, "response": "ok modify"})
 
         self.replicate_wakeup()
 
@@ -207,7 +196,6 @@ class ChordNode:
         if seq is not None:
             with self.replicate_wakeup_lock:
                 if seq != self.seq_from_prev:
-                    #print("REORDERING", seq, self.seq_from_prev) #TODO: remove
                     self.reorder_buffer_replication[seq] = ("query", _kwargs)
                     return
                 else:
@@ -226,12 +214,6 @@ class ChordNode:
         self.replicate_wakeup()
 
     def replicate_wakeup(self):
-        # wakeup reorder buffer
-        # TODO: I cannot test this code.... Check it out. We might as well leave it out.
-        # A reordering is (probably?) a rare event and will probably not appear when evaluating this project.
-        # IF however it happens to appear and the app blows up it might be worse than an inconsistency which might go unnoticed.
-        # (highly the opposite of what would apply to a real system!)
-        # on the other hand, we can present it as BONUS feature...........
         seq_wakeup = None
         with self.replicate_wakeup_lock:
             if min(self.reorder_buffer_replication.keys(), default=None) == self.seq_from_prev:
@@ -240,22 +222,18 @@ class ChordNode:
                 del self.reorder_buffer_replication[seq_wakeup]
 
         if seq_wakeup is not None:
-            #print(f"WAKEUP {seq_wakeup}")
             match op:
                 case "modify":
                     self.replicate_modify(**kwargs)
                 case "query":
                     self.replicate_query(**kwargs)
 
-
-    #TODO: Locks?
-
     @with_kwargs
     def modify(self, uid, initial_url, operation, key, value, _kwargs=None):
         key_hash = self.hash_id(key)
         if self.is_responsible(key_hash):
             if self.consistency_model == "EVENTUAL":
-                send_request(initial_url, "operation_resp", {"uid": uid, "response": "ok modify"}) #TODO: better message
+                send_request(initial_url, "operation_resp", {"uid": uid, "response": "ok modify"})
             self.replicate_modify(None, uid, initial_url, operation, key, value, 0)
         else:
             next_node = self.finger_lookup(key_hash)
@@ -310,7 +288,7 @@ class ChordNode:
             # max distance backwards from new node is the current node.
             new_data_store.append({k:v for k,v in self.data_store[0].items() if k not in ret_dict})
 
-        send_request(new_node_url, "joinResponse", { 
+        send_request(new_node_url, "joinResponse", {
             "predecessor_url": self.predecessor_url,
             "successor_url": self.url,
             "keys_start": self.keys_start,
@@ -321,7 +299,7 @@ class ChordNode:
             "data_store": new_data_store}, nonblocking=False)
 
         # inform my old predecessor to update his successor to new_node_url
-        send_request(self.predecessor_url, "update_succ_info", { 
+        send_request(self.predecessor_url, "update_succ_info", {
             "new_node_url": new_node_url}, nonblocking=False)
 
         new_node_start = self.keys_start
@@ -704,83 +682,3 @@ def handle_api_overlay():
     response = current_app.chord_node.operation_driver(current_app.chord_node.overlay, None)
     return {"response": response}
 
-
-def chord_cli(chord_node):
-    print("Chord DHT Client. Type 'help' for available commands.", flush=True)
-    while True:
-        try:
-            command = input("\033[96mChord> \033[0m").strip()
-            if not command:
-                continue
-            args = command.split()
-            cmd = args[0].lower()
-            if cmd == "insert":
-                if len(args) < 3:
-                    print("Usage: insert <key> <value>", flush=True)
-                    continue
-                key, value = args[1], args[2]
-                response = chord_node.operation_driver(chord_node.modify, "insert", key, value)
-                print(response, flush=True)
-            elif cmd == "delete":
-                if len(args) < 2:
-                    print("Usage: delete <key>", flush=True)
-                    continue
-                key = args[1]
-                response = chord_node.operation_driver(chord_node.modify, "delete", key, None)
-                print(response, flush=True)
-            elif cmd == "query":
-                if len(args) < 2:
-                    print("Usage: query <key>", flush=True)
-                    continue
-                key = args[1]
-                if key == "*":
-                    response = chord_node.operation_driver(chord_node.query_star, None)
-                else:
-                    response = chord_node.operation_driver(chord_node.query, key)
-                print(response, flush=True)
-            elif cmd == "depart":
-                if not chord_node.is_bootstrap:
-                    response = chord_node.depart()
-                    print(response, flush=True)
-                    break
-                else:
-                    print("Bootstrap node cannot depart", flush=True)
-            elif cmd == "overlay":
-                nodes = chord_node.operation_driver(chord_node.overlay, None)
-                print("Overlay (Chord Ring Topology):", flush=True)
-                for node in nodes:
-                    print(f"Node {node['url']}")
-                    print(f"  Predecessor {node['successor_url']}")
-                    print(f"  Successor {node['predecessor_url']}")
-                    print(f"  Key Range {node['keys_start']} -- {node['keys_end']}")
-
-            elif cmd == "debug_print_keys":
-                chord_node.debug_print_keys()
-            elif cmd == "help":
-                print("Available commands:", flush=True)
-                print(" insert <key> <value>  - Insert or update a <key,value> pair", flush=True)
-                print(" delete <key>          - Delete the specified key", flush=True)
-                print(" query <key>           - Query for the specified key (use '*' for all keys)", flush=True)
-                print(" depart                - Gracefully depart from the DHT", flush=True)
-                print(" overlay               - Print the network topology", flush=True)
-                print(" help                  - Show this help message", flush=True)
-            else:
-                print("Unknown command. Type 'help' for available commands.", flush=True)
-        except KeyboardInterrupt:
-            print("\nExiting CLI.", flush=True)
-            break
-#        except Exception as e:
-#            print("Error:", e, flush=True)
-
-if __name__ == "__main__":
-    def start_flask_app():
-        url = os.environ["NODE_URL"][7:]
-        ip, port = url.split(":")
-        app.run(host=ip, port=port, threaded=True)
-
-    flask_thread = threading.Thread(target=start_flask_app, daemon=False)
-    # TODO: alternative?       
-    time.sleep(1)
-    init_app(app)
-    with app.app_context():
-        chord_cli(current_app.chord_node)

@@ -37,7 +37,7 @@ class Client:
         response = response.json()
         if "error" in response:
             print(f"Response Error: {response['error']}", flush=True)
-            print(f"Exiting CLI.", flush=True)
+            print("Exiting CLI.", flush=True)
             sys.exit(1)
 
         if manager:

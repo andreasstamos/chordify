@@ -1,11 +1,9 @@
 import time
 import os
-import socket
 import tempfile
 import subprocess
 import urllib.parse
 import threading
-import atexit
 import signal
 import psutil
 
@@ -34,10 +32,7 @@ def monitor_worker(worker_id, proc):
 
 def is_bootstrap_alive():
     resp = requests.post(f"{BOOTSTRAP_URL}/healthcheck", json={})
-    if resp.status_code == 404:
-        return True
-    else:
-        return False
+    return resp.status_code == 404
 
 @app.route("/management/spawn", methods=["POST"])
 @schemas.validate_json(schemas.SPAWN_SCHEMA)
@@ -161,7 +156,7 @@ def list_workers():
 @schemas.validate_json(schemas.KILLALL_SCHEMA)
 def killall_workers():
     global workers, next_id
-    for worker_id, worker in workers.items():
+    for _, worker in workers.items():
         try:
             parent = psutil.Process(worker["process"].pid)
             for child in parent.children(recursive=True):
@@ -222,11 +217,10 @@ def cleanup():
             try:
                 proc.send_signal(signal.SIGINT)
                 proc.wait(timeout=3)
-            except Exception as e:
+            except Exception:
                 print(f"Force killing (SIGKILL) subprocess with id {worker_id}...")
                 proc.kill()
 
 if __name__ == "__main__":
-    #atexit.register(cleanup)
     app.run(host="0.0.0.0", port=5000, threaded=True)
 

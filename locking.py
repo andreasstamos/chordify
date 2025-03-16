@@ -1,5 +1,5 @@
-from flask import Flask, current_app
 import threading
+from flask import Flask, current_app
 
 def create_app():
     app = Flask(__name__)
@@ -12,7 +12,6 @@ app = create_app()
 
 @app.route("/lock-acquire", methods=["POST"])
 def acquire_distributed_lock():
-    return {}
     with current_app.allow_net_changes_cv:
         current_app.allow_net_changes_cv.wait_for(lambda: current_app.allow_net_changes)
         current_app.allow_net_changes = False
@@ -20,7 +19,6 @@ def acquire_distributed_lock():
 
 @app.route("/lock-release", methods=["POST"])
 def release_distributed_lock():
-    return {}
     with current_app.allow_net_changes_cv:
         current_app.allow_net_changes = True
         current_app.allow_net_changes_cv.notify()
