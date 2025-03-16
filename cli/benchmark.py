@@ -112,6 +112,7 @@ if __name__ == "__main__":
     if not CHORD_CLI_SSL_VERIFY:
         import urllib3
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        import io
 
     CHORD_DOCKER = os.environ.get("CHORD_DOCKER", None)
 
