@@ -196,7 +196,8 @@ class ChordNode:
                 self.seq_to_succ += 1
             self.forward_request("replicateModify", {**_kwargs, "seq": seq_send, "distance": distance+1})
         else:
-            send_request(initial_url, "operation_resp", {"uid": uid, "response": "ok modify"}) #TODO: better message
+            if self.consistency_model != "EVENTUAL":
+                send_request(initial_url, "operation_resp", {"uid": uid, "response": "ok modify"}) #TODO: better message
 
         self.replicate_wakeup()
 
@@ -253,6 +254,8 @@ class ChordNode:
     def modify(self, uid, initial_url, operation, key, value, _kwargs=None):
         key_hash = self.hash_id(key)
         if self.is_responsible(key_hash):
+            if self.consistency_model == "EVENTUAL":
+                send_request(initial_url, "operation_resp", {"uid": uid, "response": "ok modify"}) #TODO: better message
             self.replicate_modify(None, uid, initial_url, operation, key, value, 0)
         else:
             next_node = self.finger_lookup(key_hash)

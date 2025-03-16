@@ -86,7 +86,6 @@ def benchmark_driver(client_factory, consistency_model, replication_factor, sche
             case "query":
                 val = client.query(event[1])
                 if val != dht.get(event[1], None):
-                    print(val, dht.get(event[1], None))
                     stale_reads += 1
             case _:
                 assert False
