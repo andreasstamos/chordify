@@ -1,0 +1,146 @@
+server {
+    auth_basic           "Chordify";
+    auth_basic_user_file /etc/apache2/.htpasswd;
+
+    if ($request_method = OPTIONS ) {
+	# for cors...
+        return 200;
+    }
+
+    add_header 'Access-Control-Allow-Origin' $http_origin always;
+    add_header 'Access-Control-Allow-Credentials' 'true' always;
+    add_header 'Access-Control-Allow-Methods' 'GET,POST,OPTIONS' always;
+    add_header 'Access-Control-Allow-Headers' 'Authorization,If-Modified-Since,Cache-Control,Content-Type' always;
+    add_header 'Access-Control-Max-Age' 7200 always;
+    location /authcheck/ {
+        }
+
+    location / {
+        auth_basic off;
+	root /usr/share/nginx/html/chordify;
+        index index.html;
+        try_files $uri $uri/ /index.html;
+    }
+
+    location ~ ^/vm1/(0|(?:[1-9]\d*))/api/(.*)$ {
+        include proxy_params;
+        proxy_pass http://vm1/$1/api/$2;
+    }
+
+    location /vm1/management/ {
+        include proxy_params;
+        proxy_pass http://vm1/management/;
+    }
+
+
+    location ~ ^/vm2/(0|(?:[1-9]\d*))/api/(.*)$ {
+        include proxy_params;
+        proxy_pass http://vm2/$1/api/$2;
+    }
+
+    location /vm2/management/ {
+        include proxy_params;
+        proxy_pass http://vm2/management/;
+    }
+
+
+    location ~ ^/vm3/(0|(?:[1-9]\d*))/api/(.*)$ {
+        include proxy_params;
+        proxy_pass http://vm3/$1/api/$2;
+    }
+
+    location /vm3/management/ {
+        include proxy_params;
+        proxy_pass http://vm3/management/;
+    }
+
+
+    location ~ ^/vm4/(0|(?:[1-9]\d*))/api/(.*)$ {
+        include proxy_params;
+        proxy_pass http://vm4/$1/api/$2;
+    }
+
+    location /vm4/management/ {
+        include proxy_params;
+        proxy_pass http://vm4/management/;
+    }
+
+
+    location ~ ^/vm5/(0|(?:[1-9]\d*))/api/(.*)$ {
+        include proxy_params;
+        proxy_pass http://vm5/$1/api/$2;
+    }
+
+    location /vm5/management/ {
+        include proxy_params;
+        proxy_pass http://vm5/management/;
+    }
+
+
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    
+    ssl_certificate /etc/nginx/ssl/nginx.crt;
+    ssl_certificate_key /etc/nginx/ssl/nginx.key;
+    add_header Strict-Transport-Security "max-age=63072000" always;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ecdh_curve X25519:prime256v1:secp384r1;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384:DHE-RSA-CHACHA20-POLY1305;
+    ssl_prefer_server_ciphers off;
+
+    ssl_session_timeout 1d;
+    ssl_session_cache shared:MozSSL:10m;  # about 40000 sessions
+
+    ssl_dhparam "/etc/nginx/ssl/ffdhe2048.txt";
+
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    
+    return 301 https://$host$request_uri;
+
+}
+
+server {
+    location / {
+        include proxy_params;
+        proxy_pass http://vm1/;
+    }
+
+    location /locking/ {
+        include proxy_params;
+        proxy_pass http://locking/;
+    }
+
+    listen 5000;
+    listen [::]:5000;
+
+}
+
+upstream vm1 {
+    server unix:/usr/src/chordify/chordify.sock;
+}
+
+upstream vm2 {
+    server vm2:5000;
+}
+
+upstream vm3 {
+    server vm3:5000;
+}
+
+upstream vm4 {
+    server vm4:5000;
+}
+
+upstream vm5 {
+    server vm5:5000;
+}
+
+upstream locking {
+    server unix:/usr/src/chordify/chordify_locking.sock;
+}
+

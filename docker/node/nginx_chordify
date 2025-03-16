@@ -1,0 +1,11 @@
+server {
+    location / {
+        include proxy_params;
+        proxy_pass http://unix:/usr/src/chordify/chordify.sock;
+    }
+
+    listen 5000;
+    listen [::]:5000;
+
+}
+

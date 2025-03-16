@@ -18,10 +18,11 @@ def autocompleter(text, state):
         return None
 
 class Client:
-    def __init__(self, physical_urls, username=None, password=None):
+    def __init__(self, physical_urls, username=None, password=None, ssl_verify=True):
         self.physical_urls = physical_urls
         self.physical = None
         self.logical = None
+        self.ssl_verify = ssl_verify
 
         if username is not None:
             self.auth = requests.auth.HTTPBasicAuth(username, password)
@@ -30,9 +31,9 @@ class Client:
 
     def send_request(self, endpoint, data={}, manager=False):
         if manager:
-            response = requests.post(f"{self.physical_url}/management/{endpoint}", auth=self.auth, json=data)
+            response = requests.post(f"{self.physical_url}/management/{endpoint}", auth=self.auth, json=data, verify=self.ssl_verify)
         else:
-            response = requests.post(f"{self.url}/api/{endpoint}", auth=self.auth, json=data)
+            response = requests.post(f"{self.url}/api/{endpoint}", auth=self.auth, json=data, verify=self.ssl_verify)
         response = response.json()
         if "error" in response:
             print(f"Response Error: {response['error']}", flush=True)
@@ -66,7 +67,7 @@ class Client:
 
     def killall(self):
         return self.send_request("killall", manager=True)
-  
+
 
     def modify(self, operation, key, value=None):
         return self.send_request("modify", {"operation": operation, "key": key, **({"value":value} if value is not None else {})})
@@ -228,11 +229,24 @@ class Client:
                 break
 
 if __name__ == "__main__":
-    import configuration
+    try:
+        import configuration
+    except ModuleNotFoundError:
+        print("Please create the 'configuration.py' according to the 'configuration_template.py'.")
+        sys.exit(1)
+
+    CHORD_CLI_SSL_VERIFY = os.environ.get("CHORD_CLI_SSL_VERIFY","TRUE") != "FALSE"
+
+    if not CHORD_CLI_SSL_VERIFY:
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
     client = Client(
             physical_urls=configuration.physical_urls,
             username=configuration.http_username,
-            password=configuration.http_password)
+            password=configuration.http_password,
+            ssl_verify=CHORD_CLI_SSL_VERIFY
+            )
 
     readline.set_completer(autocompleter)
     delims = readline.get_completer_delims()

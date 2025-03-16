@@ -1,3 +1,6 @@
+#!/usr/bin/env python3
+
+import os
 import time
 import cli
 import copy
@@ -55,7 +58,7 @@ def benchmark_driver(client_factory, consistency_model, replication_factor):
         client = client_factory()
         client.physical = f"vm{physical_idx}"
         client.logical = str(logical_idx)
-        
+
         t_start = time.time()
         for insert_key in INSERTS[node_index]:
             client.modify("insert", insert_key, INSERT_VALUE)
@@ -96,16 +99,39 @@ def run_benchmarks(client_factory):
 
 
 if __name__ == "__main__":
-    import configuration
+    try:
+        import configuration
+    except ModuleNotFoundError:
+        print("Please create the 'configuration.py' according to the 'configuration_template.py'.")
+        sys.exit(1)
     import csv
+    import cli
+
+    CHORD_CLI_SSL_VERIFY = os.environ.get("CHORD_CLI_SSL_VERIFY","TRUE") != "FALSE"
+
+    if not CHORD_CLI_SSL_VERIFY:
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    CHORD_DOCKER = os.environ.get("CHORD_DOCKER", None)
+
+    if CHORD_DOCKER:
+        input("Press <Enter> to start benchmarking.")
 
     client_factory = lambda: cli.Client(
             physical_urls=configuration.physical_urls,
             username=configuration.http_username,
-            password=configuration.http_password)
+            password=configuration.http_password,
+            ssl_verify=CHORD_CLI_SSL_VERIFY
+            )
+
     results = run_benchmarks(client_factory)
 
-    with open("meas.csv", "w", newline='') as f:
+    if CHORD_DOCKER:
+        f = io.StringIO(newline='')
+    else:
+        f = open("meas.csv", "w", newline='')
+    with f:
         writer = csv.DictWriter(f, fieldnames=["consistency_model", "replication_factor", "time_bench1", "time_bench2"])
         writer.writeheader()
         for (consistency_model, replication_factor), (time_bench1, time_bench2) in results.items():
@@ -115,4 +141,7 @@ if __name__ == "__main__":
                 "time_bench1": time_bench1,
                 "time_bench2": time_bench2
                 })
+        if CHORD_DOCKER:
+            print(f.getvalue())
+
 

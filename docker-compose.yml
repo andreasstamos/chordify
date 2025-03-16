@@ -1,0 +1,112 @@
+services:
+  vm1:
+    hostname: vm1
+    build:
+      dockerfile: ./docker/bootstrap/Dockerfile
+    networks:
+      - internal_net
+      - internal_net_only_vm1
+      - external_net
+    expose:
+      - 5000
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - vm2
+      - vm3
+      - vm4
+      - vm5
+    stop_grace_period: 0s
+
+  vm2:
+    hostname: vm2
+    build:
+      dockerfile: ./docker/node/Dockerfile
+    networks:
+      - internal_net
+    expose:
+      - 5000
+    stop_grace_period: 0s
+
+  vm3:
+    hostname: vm3
+    build:
+      dockerfile: ./docker/node/Dockerfile
+    networks:
+      - internal_net
+    expose:
+      - 5000
+    stop_grace_period: 0s
+
+  vm4:
+    hostname: vm4
+    build:
+      dockerfile: ./docker/node/Dockerfile
+    networks:
+      - internal_net
+    expose:
+      - 5000
+    stop_grace_period: 0s
+
+  vm5:
+    hostname: vm5
+    build:
+      dockerfile: ./docker/node/Dockerfile
+    networks:
+      - internal_net
+    expose:
+      - 5000
+    stop_grace_period: 0s
+
+  cli:
+    build:
+      dockerfile: ./docker/cli/Dockerfile
+    stdin_open: true
+    tty: true
+    attach: false
+    networks:
+      - internal_net_only_vm1
+    depends_on:
+      - vm1
+      - vm2
+      - vm3
+      - vm4
+      - vm5
+    environment:
+      - CHORD_CLI_SSL_VERIFY=FALSE
+    restart: always
+    stop_grace_period: 0s
+
+  benchmark:
+    build:
+      dockerfile: ./docker/cli/Dockerfile
+    stdin_open: true
+    tty: true
+    attach: false
+    networks:
+      - internal_net_only_vm1
+    depends_on:
+      - vm1
+      - vm2
+      - vm3
+      - vm4
+      - vm5
+    environment:
+      - CHORD_CLI_SSL_VERIFY=FALSE
+      - CHORD_DOCKER=TRUE
+    restart: always
+    command: ./benchmark.py
+    stop_grace_period: 0s
+
+networks:
+  internal_net:
+    internal:
+      true
+  internal_net_only_vm1:
+    internal:
+      true
+  external_net:
+    internal:
+      false
+
