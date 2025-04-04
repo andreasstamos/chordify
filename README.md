@@ -56,6 +56,11 @@ The system ensures the replication factor is kept constant after joins and depar
 
    [https://localhost/](https://localhost/)
 
+   **🔐 User Credentials** (for Docker local deployment only):
+
+   - Username: `testuser`
+   - Password: `123456`
+
 ### 🎮 CLI & Benchmarks
 
 - **Attach to the CLI** for interactive control:
